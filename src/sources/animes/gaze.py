@@ -19,7 +19,7 @@ class EpisodeRawData(TypedDict):
     pass
 
 
-class GazeSource(AnimeSource):
+class Gaze(AnimeSource):
     name = "gaze"
 
     _base_url = "https://api.ketsuna.com/"
@@ -29,7 +29,7 @@ class GazeSource(AnimeSource):
     _episode_url = "https://deril-fr.github.io/anime/{lang}/{anime_id}/episode/{episode}"
 
     _link_regex = re.compile(
-        r"https://deril-fr\.github\.io/anime/(?P<lang>[^/]+)/(?P<anime_id>\d+)/episode/(<?P<episode>\d+)"
+        r"https://deril-fr.github.io/anime/(?P<lang>[^/]+)/(?P<anime_id>\d+)/episode/(?P<episode>\d+)"
     )
 
     def _get_episode_from_rss_item(self, item: Any) -> Episode:

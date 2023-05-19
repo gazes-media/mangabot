@@ -7,14 +7,11 @@ from urllib.parse import urljoin
 
 import feedparser
 from bs4 import BeautifulSoup, Tag
-from mediasub import MediaSub
 from mediasub._logger import BraceMessage as __
 from mediasub.models import Chapter, MangaSource, Page
 from mediasub.models.manga import Chapter, Manga
 
 logger = logging.getLogger(__name__)
-
-media_sub = MediaSub("./history.sqlite")
 
 
 class MangaRawData(TypedDict):
@@ -31,20 +28,24 @@ class PageRawData(TypedDict):
 
 class ScanVFDotNet(MangaSource):
     name = "www.scan-vf.net"
-
     _base_url = "https://www.scan-vf.net/"
-    _rss_url = urljoin(_base_url, "feed")
-    _images_url = urljoin(_base_url, "uploads/manga/")
-    _search_url = urljoin(_base_url, "search")
 
-    _script_extract_reg = re.compile(r"var pages = (\[.+\])", re.MULTILINE)
-    _link_scrap_reg = re.compile(
-        r"https://www\.scan-vf\.net/"
-        r"(?P<manga_name>[\w\-.]+)/"
-        r"(?P<chapter>chapitre-(?P<number>\d+)(?:\.(?P<sub_number>\d+))?)"
-    )
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
 
-    _title_scrap_reg = re.compile(r"(?P<manga_name>[^#]+) #(?P<chapter>\d+)")
+        self._rss_url = urljoin(self._base_url, "feed")
+        self._all_url = urljoin(self._base_url, "changeMangaList?type=text")
+        self._images_url = urljoin(self._base_url, "uploads/manga/")
+        self._search_url = urljoin(self._base_url, "search")
+
+        self._script_extract_reg = re.compile(r"var pages = (\[.+\])", re.MULTILINE)
+        self._link_scrap_reg = re.compile(
+            f"{self._base_url}"
+            r"(?P<manga_name>[\w\-.]+)/"
+            r"(?P<chapter>chapitre-(?P<number>\d+)(?:\.(?P<sub_number>\d+))?)"
+        )
+        self._manga_link_reg = re.compile(rf"{self._base_url}(?P<manga_name>[\w\-.]+)")
+        self._title_scrap_reg = re.compile(r"(?P<manga_name>[^#]+) #(?P<chapter>\d+)")
 
     def _get_chapter_from_rss_item(self, item: Any) -> Chapter:
         logger.debug(__("Extracting infos from : {}", item.link))
@@ -150,6 +151,26 @@ class ScanVFDotNet(MangaSource):
         chapters = soup.select("body > div.wrapper > div > div:nth-child(1) > div > div:nth-child(7) > div > ul > li")
         chapters = [self._chapter_from_tag(manga, chapter) for chapter in chapters]
         return chapters
+
+    def _manga_from_tag(self, tag: Tag) -> Manga:
+        name_tag = tag.select_one("h6")
+        assert name_tag is not None
+        url = tag.attrs["href"]
+
+        match = self._manga_link_reg.match(url)
+        assert match is not None
+
+        return Manga(
+            name=name_tag.text,
+            url=url,
+            raw_data=MangaRawData(name=match["manga_name"]),
+        )
+
+    async def _all(self) -> Iterable[Manga]:
+        res = await self.client.get(self._all_url)
+        soup = BeautifulSoup(res.text, features="html.parser")
+        mangas_tag = soup.select("li > a")
+        return (self._manga_from_tag(manga) for manga in mangas_tag)
 
     async def _download(self, target: Page) -> tuple[str, io.BytesIO]:
         result = await self.client.get(target.url)

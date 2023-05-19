@@ -1,6 +1,5 @@
 import re
 from typing import Any, Iterable
-from urllib.parse import urljoin
 
 import feedparser
 from mediasub.models import Chapter, Page
@@ -12,15 +11,17 @@ class MangaScanDotWS(ScanVFDotNet):
     name = "manga-scan.ws"
 
     _base_url = "https://manga-scan.ws/"
-    _rss_url = urljoin(_base_url, "feed")
-    _images_url = "https://scansmangas.me/scans/"
-    _search_url = urljoin(_base_url, "search")
 
-    _link_scrap_reg = re.compile(
-        r"https://manga-scan\.ws/manga/"
-        r"(?P<manga_name>[\w\-.]+)/"
-        r"(?P<chapter>(?P<number>\d+)(?:\.(?P<sub_number>\d+))?)"
-    )
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+
+        self._images_url = "https://scansmangas.me/scans/"
+        self._link_scrap_reg = re.compile(
+            rf"{self._base_url}manga/"
+            r"(?P<manga_name>[\w\-.]+)/"
+            r"(?P<chapter>(?P<number>\d+)(?:\.(?P<sub_number>\d+))?)"
+        )
+        self._manga_link_reg = re.compile(rf"{self._base_url}manga/(?P<manga_name>[\w\-.]+)")
 
     async def _get_recent(self, limit: int, before: int | None = None) -> Iterable[Chapter]:
         if before is None:
