@@ -1,0 +1,4 @@
+[tool.pylint]
+max-line-length = 120
+disable = ["C0115", "C0116", "C0114"]
+good-names = ["db", "wh", "nb"]
