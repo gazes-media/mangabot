@@ -14,12 +14,12 @@ class BraceMessage:
         return self.fmt.format(*self.args, **self.kwargs)
 
 
-def chunker(it: Iterable[T], n: int) -> Generator[Sequence[T], None, None]:
-    if n < 1:
+def chunker(iterable: Iterable[T], nb: int) -> Generator[Sequence[T], None, None]:
+    if nb < 1:
         raise ValueError("n must be at least one")
-    it = iter(it)
+    iterable = iter(iterable)
     while True:
-        chunk_it = islice(it, n)
+        chunk_it = islice(iterable, nb)
         try:
             first_el = next(chunk_it)
         except StopIteration:

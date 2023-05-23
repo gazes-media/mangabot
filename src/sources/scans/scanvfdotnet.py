@@ -29,6 +29,8 @@ class ScanVFDotNet(MangaSource):
     name = "www.scan-vf.net"
     _base_url = "https://www.scan-vf.net/"
 
+    _script_selector = "body > div.container-fluid > script"
+
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
 
@@ -113,7 +115,7 @@ class ScanVFDotNet(MangaSource):
 
     async def _get_pages(self, chapter: Chapter) -> Iterable[Page]:
         soup = BeautifulSoup((await self.client.get(chapter.url)).text, features="html.parser")
-        script = soup.select_one("body > div.container-fluid > script")
+        script = soup.select_one(self._script_selector)
 
         if not script:
             raise ValueError(f"Error when looking for the script tag. URL: {chapter.url}")
@@ -136,13 +138,14 @@ class ScanVFDotNet(MangaSource):
         if url_match is None:
             raise ValueError("Error while parsing chapter from soup.")
 
+        raw_sub_number = url_match.group("sub_number")
         return Chapter(
             manga=manga,
             name=name_soup.text,
             number=int(url_match.group("number")),
             language=None,
             url=url_soup.attrs["href"],
-            sub_number=int(v) if (v := url_match.group("sub_number")) else None,
+            sub_number=int(raw_sub_number) if raw_sub_number else None,
             raw_data=ChapterRawData(internal_ref=url_match.group("chapter")),
         )
 

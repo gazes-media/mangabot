@@ -43,6 +43,8 @@ class SourceGroup:
 
 
 class MangaBot(discord.AutoShardedClient):
+    db: aiosqlite.Connection
+
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
@@ -105,13 +107,12 @@ class MangaBot(discord.AutoShardedClient):
                 logger.warning(__("Channel with ID {} is not a Forum Channel !", source.channel_id))
                 continue
             if not (webhooks := await channel.webhooks()):
-                wh = await channel.create_webhook(name="Manga notifier")
+                source.webhook = await channel.create_webhook(name="Manga notifier")
             else:
-                wh = webhooks[0]
-            source.webhook = wh
+                source.webhook = webhooks[0]
 
     async def on_ready(self):
-        logger.info("Logged on as {0}!".format(self.user))
+        logger.info(__("Logged on as {}!", self.user))
 
     def run(
         self,
@@ -154,7 +155,7 @@ client = MangaBot()
 async def on_chapter(source: MangaSource, chapter: Chapter):
     await client.wait_until_ready()
     group = next(s for s in client.sources if s.type is SourcesType.MANGA)
-    assert group.webhook is not None
+    assert group.webhook is not None  # nosec B101
 
     sql = "SELECT user_id FROM subscription WHERE series_id = ?"
     async with client.db.cursor() as cursor:
@@ -178,7 +179,7 @@ async def on_chapter(source: MangaSource, chapter: Chapter):
         wait=True,
         content=", ".join(f"<@{user_id}>" for user_id, in results),
     )
-    assert isinstance(message.channel, discord.PartialMessageable)
+    assert isinstance(message.channel, discord.PartialMessageable)  # nosec: B101
 
     for chunk in chunker(await source.get_pages(chapter), 10):
         imgs = await asyncio.gather(*(source.download(page) for page in chunk))
@@ -190,7 +191,7 @@ async def on_chapter(source: MangaSource, chapter: Chapter):
 async def on_episode(source: AnimeSource, episode: Episode):
     await client.wait_until_ready()
     group = next(s for s in client.sources if s.type is SourcesType.ANIME)
-    assert group.webhook is not None
+    assert group.webhook is not None  # nosec: B101
 
     sql = "SELECT user_id FROM subscription WHERE series_id = ?"
     async with client.db.cursor() as cursor:
@@ -215,12 +216,13 @@ async def on_episode(source: AnimeSource, episode: Episode):
 
 
 @client.tree.command()
-async def search(inter: discord.Interaction, type: SourcesType, name: str):
+@app_commands.rename(_type="type")
+async def search(inter: discord.Interaction, _type: SourcesType, name: str):
     if ":::" not in name:
         return await inter.response.send_message("Please select a name in the list.")
     source_name, content_name = name.split(":::")
 
-    source_group: SourceGroup = next((s for s in client.sources if s.type is type))
+    source_group: SourceGroup = next((s for s in client.sources if s.type is _type))
     try:
         source, cache = next(
             (s, c) for (s, c) in zip(source_group.sources, source_group.sources_all) if s.name == source_name
@@ -233,7 +235,7 @@ async def search(inter: discord.Interaction, type: SourcesType, name: str):
         return await inter.response.send_message("An error occurred.")
 
     return await inter.response.send_message(
-        f"{source.name} - {content.display}", view=SubscribeView(f"{type.value}/{content.normalized_name}", inter)
+        f"{source.name} - {content.display}", view=SubscribeView(f"{_type.value}/{content.normalized_name}", inter)
     )
 
 
@@ -250,15 +252,15 @@ async def search_autocomplete(inter: discord.Interaction, current: str) -> list[
         if not source_all:
             continue
 
-        for s in source_all:
-            if s.normalized_name in normalized:
+        for content in source_all:
+            if content.normalized_name in normalized:
                 continue
             if not current:
                 continue
-            if current.lower() not in s.display.lower():
+            if current.lower() not in content.display.lower():
                 continue
-            normalized.append(s.normalized_name)
-            results.append((source, s))
+            normalized.append(content.normalized_name)
+            results.append((source, content))
 
     return [
         app_commands.Choice(name=result[1].display, value=f"{result[0].name}:::{result[1].display}")
@@ -279,6 +281,7 @@ class SubscribeView(ui.View):
 
     @ui.button(label="Subscribe/Unsubscribe", style=discord.ButtonStyle.primary)
     async def toggle_subscription(self, inter: discord.Interaction, button: discord.ui.Button[Self]):
+        del button  # unused
         async with client.db.cursor() as cursor:
             sql = """SELECT 1 FROM subscription WHERE user_id = ? AND series_id = ?"""
             req = await cursor.execute(sql, (inter.user.id, self.series_id))
