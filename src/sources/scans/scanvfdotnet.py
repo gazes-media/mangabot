@@ -8,8 +8,7 @@ from urllib.parse import urljoin
 import feedparser
 from bs4 import BeautifulSoup, Tag
 from mediasub._logger import BraceMessage as __
-from mediasub.models import Chapter, MangaSource, Page
-from mediasub.models.manga import Chapter, Manga
+from mediasub.models import Chapter, Manga, MangaSource, Page
 
 logger = logging.getLogger(__name__)
 
@@ -66,20 +65,22 @@ class ScanVFDotNet(MangaSource):
             raw_data=MangaRawData(name=url_match["manga_name"]),
         )
 
+        sub_number_raw = url_match["sub_number"]
         return Chapter(
             language=item.content[0].language,
             manga=manga,
             name=item.summary,
             url=item.link,
             number=int(url_match["number"]),
-            sub_number=int(v) if (v := url_match["sub_number"]) else None,
+            sub_number=int(sub_number_raw) if sub_number_raw else None,
             raw_data=ChapterRawData(internal_ref=url_match["chapter"]),
         )
 
     async def _get_recent(self, limit: int, before: int | None = None) -> Iterable[Chapter]:
         if before is None:
             before = 0
-        feed: Any = feedparser.parse(self._rss_url)
+        res = await self.client.get(self._rss_url)
+        feed: Any = feedparser.parse(res.text)
 
         return (self._get_chapter_from_rss_item(item) for item in feed.entries[before : limit + before])
 
@@ -115,11 +116,11 @@ class ScanVFDotNet(MangaSource):
         script = soup.select_one("body > div.container-fluid > script")
 
         if not script:
-            raise ValueError("Error when looking for the script tag. URL: {}", chapter.url)
+            raise ValueError(f"Error when looking for the script tag. URL: {chapter.url}")
 
         match = self._script_extract_reg.search(script.text)
         if not match:
-            raise ValueError("Error when looking for the script content. URL: {}", chapter.url)
+            raise ValueError(f"Error when looking for the script content. URL: {chapter.url}")
 
         return [self._page_from_raw(chapter, page) for page in json.loads(match.group(1))]
 
@@ -154,11 +155,11 @@ class ScanVFDotNet(MangaSource):
 
     def _manga_from_tag(self, tag: Tag) -> Manga:
         name_tag = tag.select_one("h6")
-        assert name_tag is not None
+        assert name_tag is not None  # nosec: B101
         url = tag.attrs["href"]
 
         match = self._manga_link_reg.match(url)
-        assert match is not None
+        assert match is not None  # nosec: B101
 
         return Manga(
             name=name_tag.text,
