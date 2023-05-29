@@ -1,5 +1,5 @@
 [tool.pylint]
 max-line-length = 120
 disable = ["C0115", "C0116", "C0114", "R0903", "R0902"]
-good-names = ["db", "wh", "nb"]
+good-names = ["db", "wh", "nb", "e", "id"]
 allow-reexport-from-package = true

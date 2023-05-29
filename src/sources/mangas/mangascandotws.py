@@ -1,16 +1,13 @@
 import re
-from typing import Any, Iterable
+from typing import Any
 
-import feedparser
-from mediasub.models import Chapter, Page
-
-from sources.scans.scanvfdotnet import PageRawData, ScanVFDotNet
+from .base import Chapter, Page
+from .scanvfdotnet import PageInternal, ScanVFDotNet
 
 
 class MangaScanDotWS(ScanVFDotNet):
-    name = "manga-scan.ws"
-
-    _base_url = "https://manga-scan.ws/"
+    name = "MangaScan"
+    url = _base_url = "https://manga-scan.ws/"
 
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -23,18 +20,11 @@ class MangaScanDotWS(ScanVFDotNet):
         )
         self._manga_link_reg = re.compile(rf"{self._base_url}manga/(?P<manga_name>[\w\-.]+)")
 
-    async def _get_recent(self, limit: int, before: int | None = None) -> Iterable[Chapter]:
-        if before is None:
-            before = 0
-        feed: Any = feedparser.parse(self._rss_url)
-
-        return (self._get_chapter_from_rss_item(item) for item in feed.entries[before : limit + before])
-
     def _page_from_raw(self, chapter: Chapter, raw: dict[str, Any]) -> Page:
         url = raw["page_image"]
         return Page(
             chapter=chapter,
             number=int(raw["page_slug"]),
             url=url,
-            raw_data=PageRawData(filename=raw["page_image"].split("/")[-1]),
+            internal=PageInternal(filename=raw["page_image"].split("/")[-1]),
         )

@@ -2,32 +2,40 @@ import io
 import json
 import logging
 import re
-from typing import Any, Iterable, TypedDict
+from dataclasses import dataclass
+from typing import Any, Iterable
 from urllib.parse import urljoin
 
 import feedparser
+import httpx
 from bs4 import BeautifulSoup, Tag
+from httpx._types import QueryParamTypes, URLTypes
+from mediasub import SourceDown
 from mediasub._logger import BraceMessage as __
-from mediasub.models import Chapter, Manga, MangaSource, Page
+
+from .base import Chapter, Manga, MangaSource, Page
 
 logger = logging.getLogger(__name__)
 
 
-class MangaRawData(TypedDict):
+@dataclass
+class MangaInternal:
     name: str
 
 
-class ChapterRawData(TypedDict):
-    internal_ref: str
+@dataclass
+class ChapterInternal:
+    ref: str
 
 
-class PageRawData(TypedDict):
+@dataclass
+class PageInternal:
     filename: str
 
 
 class ScanVFDotNet(MangaSource):
-    name = "www.scan-vf.net"
-    _base_url = "https://www.scan-vf.net/"
+    name = "ScanVF"
+    url = _base_url = "https://www.scan-vf.net/"
 
     _script_selector = "body > div.container-fluid > script"
 
@@ -48,6 +56,12 @@ class ScanVFDotNet(MangaSource):
         self._manga_link_reg = re.compile(rf"{self._base_url}(?P<manga_name>[\w\-.]+)")
         self._title_scrap_reg = re.compile(r"(?P<manga_name>[^#]+) #(?P<chapter>\d+)")
 
+    async def _get(self, url: URLTypes, *, params: QueryParamTypes | None = None) -> httpx.Response:
+        try:
+            return await self.client.get(url, params=params)
+        except httpx.HTTPError as e:
+            raise SourceDown(e) from e
+
     def _get_chapter_from_rss_item(self, item: Any) -> Chapter:
         logger.debug(__("Extracting infos from : {}", item.link))
 
@@ -64,56 +78,51 @@ class ScanVFDotNet(MangaSource):
         manga = Manga(
             name=title_match["manga_name"],
             url=self._base_url + url_match["manga_name"],
-            raw_data=MangaRawData(name=url_match["manga_name"]),
+            internal=MangaInternal(name=url_match["manga_name"]),
         )
 
         sub_number_raw = url_match["sub_number"]
         return Chapter(
-            language=item.content[0].language,
             manga=manga,
             name=item.summary,
-            url=item.link,
             number=int(url_match["number"]),
+            language=item.content[0].language,
+            url=item.link,
             sub_number=int(sub_number_raw) if sub_number_raw else None,
-            raw_data=ChapterRawData(internal_ref=url_match["chapter"]),
+            internal=ChapterInternal(ref=url_match["chapter"]),
         )
 
-    async def _get_recent(self, limit: int, before: int | None = None) -> Iterable[Chapter]:
-        if before is None:
-            before = 0
-        res = await self.client.get(self._rss_url)
+    async def get_recent(self, limit: int = 25) -> Iterable[Chapter]:
+        res = await self._get(self._rss_url)
         feed: Any = feedparser.parse(res.text)
 
-        return (self._get_chapter_from_rss_item(item) for item in feed.entries[before : limit + before])
+        return (self._get_chapter_from_rss_item(item) for item in feed.entries[:limit])
 
-    async def _search(self, query: str) -> list[Manga]:
-        results = await self.client.get(self._search_url, params={"query": query})
+    async def search(self, query: str) -> list[Manga]:
+        results = await self._get(self._search_url, params={"query": query})
+
         return [
             Manga(
                 name=result["value"],
                 url=urljoin(self._base_url, result["data"]),
-                raw_data={
-                    "name": result["data"],
-                },
+                internal=MangaInternal(name=result["data"]),
             )
             for result in results.json()["suggestions"]
         ]
 
     def _page_from_raw(self, chapter: Chapter, raw: dict[str, Any]) -> Page:
-        manga_raw: MangaRawData = chapter.manga.raw_data
-        chapter_raw: ChapterRawData = chapter.raw_data
-
         url = urljoin(
-            self._images_url, "/".join((manga_raw["name"], "chapters", chapter_raw["internal_ref"], raw["page_image"]))
+            self._images_url,
+            "/".join((chapter.manga.internal.name, "chapters", chapter.internal.ref, raw["page_image"])),
         )
         return Page(
             chapter=chapter,
             number=int(raw["page_slug"]),
             url=url,
-            raw_data=PageRawData(filename=raw["page_image"]),
+            internal=PageInternal(filename=raw["page_image"]),
         )
 
-    async def _get_pages(self, chapter: Chapter) -> Iterable[Page]:
+    async def get_pages(self, chapter: Chapter) -> Iterable[Page]:
         soup = BeautifulSoup((await self.client.get(chapter.url)).text, features="html.parser")
         script = soup.select_one(self._script_selector)
 
@@ -146,11 +155,11 @@ class ScanVFDotNet(MangaSource):
             language=None,
             url=url_soup.attrs["href"],
             sub_number=int(raw_sub_number) if raw_sub_number else None,
-            raw_data=ChapterRawData(internal_ref=url_match.group("chapter")),
+            internal=ChapterInternal(ref=url_match.group("chapter")),
         )
 
-    async def _get_chapters(self, manga: Manga) -> list[Chapter]:
-        res = await self.client.get(manga.url)
+    async def get_chapters(self, manga: Manga) -> list[Chapter]:
+        res = await self._get(manga.url)
         soup = BeautifulSoup(res.text, features="html.parser")
         chapters = soup.select("body > div.wrapper > div > div:nth-child(1) > div > div:nth-child(7) > div > ul > li")
         chapters = [self._chapter_from_tag(manga, chapter) for chapter in chapters]
@@ -167,15 +176,15 @@ class ScanVFDotNet(MangaSource):
         return Manga(
             name=name_tag.text,
             url=url,
-            raw_data=MangaRawData(name=match["manga_name"]),
+            internal=MangaInternal(name=match["manga_name"]),
         )
 
-    async def _all(self) -> Iterable[Manga]:
-        res = await self.client.get(self._all_url)
+    async def get_mangas(self) -> Iterable[Manga]:
+        res = await self._get(self._all_url)
         soup = BeautifulSoup(res.text, features="html.parser")
         mangas_tag = soup.select("li > a")
         return (self._manga_from_tag(manga) for manga in mangas_tag)
 
-    async def _download(self, target: Page) -> tuple[str, io.BytesIO]:
-        result = await self.client.get(target.url)
-        return target.raw_data["filename"], io.BytesIO(result.content)
+    async def download_page(self, page: Page) -> tuple[str, io.BytesIO]:
+        result = await self._get(page.url)
+        return page.internal.filename, io.BytesIO(result.content)

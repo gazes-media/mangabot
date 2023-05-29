@@ -1,62 +1,38 @@
 import asyncio
 import logging
 import os
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Self, Sequence
+from typing import Literal, Self
 
 import aiosqlite
 import discord
 import mediasub
-from discord import File, ForumChannel, app_commands, ui
+from discord import File, app_commands, ui
 from discord.ext import tasks
 from discord.utils import MISSING
-from mediasub.models import AnimeSource, Chapter, Episode, MangaSource
-from mediasub.models.base import NormalizedObject, Source
 
-from constants import ANIME_CHANNEL, MANGA_CHANNEL
+from aggregators import AnimeAggregator, MangaAggregator, WebtoonAggregator
 from database_patchs import patchs
-from sources.animes import Gaze
-from sources.scans import MangaScanDotWS, ScanFRDotOrg, ScanMangaVFDotWS, ScanVFDotNet
+from sources.animes import AnimeSource, Episode, Gaze
+from sources.mangas import Chapter, MangaScanDotWS, MangaSource, ScanFRDotOrg, ScanMangaVFDotWS, ScanVFDotNet
+from sources.webtoons.webtoon import WebtoonEpisode, WebtoonSource
 from utils import BraceMessage as __
 from utils import chunker
 
 logger = logging.getLogger(__name__)
 
 
-manga_sources = [MangaScanDotWS(), ScanFRDotOrg(), ScanMangaVFDotWS(), ScanVFDotNet()]
-anime_sources = [Gaze()]
-
-
-class SourcesType(Enum):
-    MANGA = "manga"  # mean scan
-    ANIME = "anime"
-
-
-@dataclass
-class SourceGroup:
-    type: SourcesType
-    channel_id: int
-    sources: list[Source]
-    sources_all: list[Sequence[NormalizedObject]] = field(default_factory=list)
-    webhook: discord.Webhook | None = None
-
-
 class MangaBot(discord.AutoShardedClient):
     db: aiosqlite.Connection
+    manga_aggregate = MangaAggregator(MangaScanDotWS(), ScanFRDotOrg(), ScanMangaVFDotWS(), ScanVFDotNet())
+    anime_aggregate = AnimeAggregator(Gaze())
+    webtoon_aggregate = WebtoonAggregator(WebtoonSource())
+
+    aggregates = [manga_aggregate, anime_aggregate, webtoon_aggregate]
 
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
 
-        self.sources = [
-            SourceGroup(
-                SourcesType.MANGA,
-                MANGA_CHANNEL,
-                list(manga_sources),
-            ),
-            SourceGroup(SourcesType.ANIME, ANIME_CHANNEL, list(anime_sources)),
-        ]
         self.mediasub = mediasub.MediaSub("data/history.sqlite")
 
         self.tree = app_commands.CommandTree(self)
@@ -67,14 +43,14 @@ class MangaBot(discord.AutoShardedClient):
         self.db = await aiosqlite.connect("data/db.sqlite")
 
         await self.init_db()
-        await self.init_webhooks()
-        await self.init_sources_cache()
+        await self.refresh_aggregates()
 
-    async def init_sources_cache(self):
-        for source_group in self.sources:
-            source_group.sources_all = [
-                tuple(all) for all in await asyncio.gather(*(source.all() for source in source_group.sources))
-            ]
+        for agg in self.aggregates:
+            await agg.setup(self)
+
+    async def refresh_aggregates(self):
+        for agg in self.aggregates:
+            await agg.refresh()
 
     async def init_db(self):
         async with self.db.cursor() as cursor:
@@ -95,21 +71,6 @@ class MangaBot(discord.AutoShardedClient):
                     continue
                 await patch[1]()
                 await cursor.execute("INSERT INTO database_patchs VALUES (?)", (patch[0],))
-
-    async def init_webhooks(self):
-        for source in self.sources:
-            try:
-                channel = self.get_channel(source.channel_id) or await self.fetch_channel(source.channel_id)
-            except (discord.NotFound, discord.Forbidden):
-                logger.warning(__("A channel ID is invalid : {}", source.channel_id))
-                continue
-            if not isinstance(channel, ForumChannel):
-                logger.warning(__("Channel with ID {} is not a Forum Channel !", source.channel_id))
-                continue
-            if not (webhooks := await channel.webhooks()):
-                source.webhook = await channel.create_webhook(name="Manga notifier")
-            else:
-                source.webhook = webhooks[0]
 
     async def on_ready(self):
         logger.info(__("Logged on as {}!", self.user))
@@ -151,18 +112,19 @@ class MangaBot(discord.AutoShardedClient):
 client = MangaBot()
 
 
-@client.mediasub.sub_to(*manga_sources)
-async def on_chapter(source: MangaSource, chapter: Chapter):
-    await client.wait_until_ready()
-    group = next(s for s in client.sources if s.type is SourcesType.MANGA)
-    assert group.webhook is not None  # nosec B101
-
+async def check_subscription(_id: str):
     sql = "SELECT user_id FROM subscription WHERE series_id = ?"
     async with client.db.cursor() as cursor:
-        req = await cursor.execute(sql, (f"{SourcesType.MANGA.value}/{chapter.manga.normalized_name}",))
-        results = await req.fetchall()
-        if not results:
-            return
+        req = await cursor.execute(sql, (_id,))
+        return await req.fetchall()
+
+
+@client.mediasub.sub_to(*client.manga_aggregate.sources)
+async def on_chapter(source: MangaSource, chapter: Chapter):
+    await client.wait_until_ready()
+
+    if not (results := await check_subscription(chapter.manga.id)):
+        return
 
     embed = discord.Embed(
         title=f"New chapter of {chapter.manga.name} !",
@@ -173,104 +135,101 @@ async def on_chapter(source: MangaSource, chapter: Chapter):
     embed.add_field(name="Chapter name", value=chapter.name, inline=True)
     embed.add_field(name="Source", value=source.name, inline=True)
 
-    message = await group.webhook.send(
+    message = await client.manga_aggregate.channel.create_thread(
+        name=f"{chapter.manga.name[:80]} - chapter {chapter.number}",
         embed=embed,
-        thread_name=f"{chapter.manga.name} - chapter {chapter.number}",
-        wait=True,
         content=", ".join(f"<@{user_id}>" for user_id, in results),
     )
-    assert isinstance(message.channel, discord.PartialMessageable)  # nosec: B101
 
     for chunk in chunker(await source.get_pages(chapter), 10):
-        imgs = await asyncio.gather(*(source.download(page) for page in chunk))
+        imgs = await asyncio.gather(*(source.download_page(page) for page in chunk))
         files = [File(img[1], f"{chapter.number}-{img[0]}", spoiler=True) for img in imgs]
-        await group.webhook.send(files=files, thread=message.channel)
+        await client.manga_aggregate.webhook.send(files=files, thread=message.thread)
 
 
-@client.mediasub.sub_to(*anime_sources)
+@client.mediasub.sub_to(*client.anime_aggregate.sources)
 async def on_episode(source: AnimeSource, episode: Episode):
     await client.wait_until_ready()
-    group = next(s for s in client.sources if s.type is SourcesType.ANIME)
-    assert group.webhook is not None  # nosec: B101
 
-    sql = "SELECT user_id FROM subscription WHERE series_id = ?"
-    async with client.db.cursor() as cursor:
-        req = await cursor.execute(sql, (f"{SourcesType.ANIME.value}/{episode.anime.normalized_name}",))
-        results = await req.fetchall()
-        if not results:
-            return
+    if not (results := await check_subscription(episode.anime.id)):
+        return
 
     embed = discord.Embed(
         title=f"New chapter of {episode.anime.name} !",
-        description=f"**{episode.anime.name}** - {episode.name}",
+        description=f"**{episode.anime.name[:80]}** - episode {episode.number}",
         url=episode.url,
     )
     embed.add_field(name="Language", value=episode.language or "unknown", inline=True)
     embed.add_field(name="Source", value=source.name, inline=True)
 
-    await group.webhook.send(
+    await client.anime_aggregate.webhook.send(
         embed=embed,
-        thread_name=f"{episode.anime.name} - {episode.name}",
+        thread_name=f"{episode.anime.name[:50]} - {episode.name}",
         content=", ".join(f"<@{user_id}>" for user_id, in results),
     )
 
 
-@client.tree.command()
-@app_commands.rename(_type="type")
-async def search(inter: discord.Interaction, _type: SourcesType, name: str):
-    if ":::" not in name:
-        return await inter.response.send_message("Please select a name in the list.")
-    source_name, content_name = name.split(":::")
+@client.mediasub.sub_to(*client.webtoon_aggregate.sources)
+async def on_webtoon(source: WebtoonSource, episode: WebtoonEpisode):
+    await client.wait_until_ready()
 
-    source_group: SourceGroup = next((s for s in client.sources if s.type is _type))
-    try:
-        source, cache = next(
-            (s, c) for (s, c) in zip(source_group.sources, source_group.sources_all) if s.name == source_name
-        )
-    except StopIteration:
-        return await inter.response.send_message("An error occurred.")
+    if not (results := await check_subscription(episode.webtoon.id)):
+        return
 
-    content = next((c for c in cache if c.display == content_name), None)
-    if content is None:
-        return await inter.response.send_message("An error occurred.")
+    embed = discord.Embed(
+        title=f"New episode of {episode.webtoon.name} !",
+        description=f"**{episode.webtoon.name[:80]}** - episode {episode.number}",
+        url=episode.url,
+    )
+    embed.add_field(name="Language", value=episode.language or "unknown", inline=True)
+    embed.add_field(name="Source", value=source.name, inline=True)
 
-    return await inter.response.send_message(
-        f"{source.name} - {content.display}", view=SubscribeView(f"{_type.value}/{content.normalized_name}", inter)
+    await client.anime_aggregate.webhook.send(
+        embed=embed,
+        thread_name=f"{episode.webtoon.name[:50]} - {episode.name}",
+        content=", ".join(f"<@{user_id}>" for user_id, in results),
     )
 
 
-@search.autocomplete(name="name")
+dial = {
+    "manga": client.manga_aggregate,
+    "anime": client.anime_aggregate,
+    "webtoon": client.webtoon_aggregate,
+}
+
+
+@client.tree.command()
+@app_commands.rename(_type="type", _id="name")
+async def search(inter: discord.Interaction, _type: Literal["manga", "anime", "webtoon"], _id: str):
+    aggregate = dial[_type]
+    content, sources = await aggregate.retrieve(_id)
+
+    embed = discord.Embed(
+        title=content.name[:80],
+        description=content.description,
+    )
+    embed.add_field(name="Sources", value="\n".join(f"[{src.name}]({ct.url})" for src, ct in sources), inline=False)
+
+    if content.thumbnail:
+        embed.set_thumbnail(url=content.thumbnail)
+
+    await inter.response.send_message(embed=embed, view=SubscribeView(content.id, inter))
+
+
+@search.autocomplete(name="_id")
 async def search_autocomplete(inter: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     if inter.namespace.type is None:
         return [app_commands.Choice(name="Please first select a type", value="")]
 
-    source_group: SourceGroup = next(s for s in client.sources if s.type is SourcesType(inter.namespace.type))
+    aggregate = dial[inter.namespace.type]
+    results = await aggregate.search(current)
 
-    normalized: list[str] = []
-    results: list[tuple[Source, NormalizedObject]] = []
-    for source, source_all in zip(source_group.sources, source_group.sources_all):
-        if not source_all:
-            continue
-
-        for content in source_all:
-            if content.normalized_name in normalized:
-                continue
-            if not current:
-                continue
-            if current.lower() not in content.display.lower():
-                continue
-            normalized.append(content.normalized_name)
-            results.append((source, content))
-
-    return [
-        app_commands.Choice(name=result[1].display, value=f"{result[0].name}:::{result[1].display}")
-        for result in results
-    ][:25]
+    return [app_commands.Choice(name=result.name, value=result.id) for result in results]
 
 
 @tasks.loop(hours=1)
 async def refresh_all():
-    await client.init_sources_cache()
+    await client.refresh_aggregates()
 
 
 class SubscribeView(ui.View):
