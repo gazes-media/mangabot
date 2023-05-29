@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import io
+import re
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Any, Iterable
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterable
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 from mediasub import Source
 from mediasub.utils import normalize
+
+
+@dataclass(kw_only=True)
+class WebtoonInternal:
+    fetched: bool = False
+    url_name: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -16,12 +25,12 @@ class Webtoon:
     author: str
     likes: str | None = None
     genre: str
-    type: str
+    category: str | None
     url: str
     thumbnail: str | None = None
     description: str | None = None
 
-    internal: Any = None
+    internal: WebtoonInternal = field(repr=False, default_factory=WebtoonInternal)
 
     @property
     def id(self) -> str:
@@ -48,11 +57,13 @@ class WebtoonSource(Source["WebtoonEpisode"]):
 
     _cookies = {"pagGDPR": "true"}
 
-    _webtoon_url_ft = "https://www.webtoons.com/episodeList?titleNo={eid}"
-    _canva_url_ft = "https://www.webtoons.com/challenge/episodeList?titleNo={eid}"
+    _webtoon_odl_url_ft = urljoin(_base_url, "/episodeList?titleNo={eid}")
+    _canva_old_url_ft = urljoin(_base_url, "/challenge/episodeList?titleNo={eid}")
 
-    def __init__(self, *args: Any, **kwargs: Any):
-        super().__init__(*args, **kwargs)
+    _webtoon_viewer_url_ft = urljoin(_base_url, "/fr/{category}/{url_name}/anything/viewer")
+    _webtoon_url_reg = re.compile(
+        "".join((_base_url, r"fr/(?P<category>[a-z]+)/(?P<url_name>[a-z0-9-]+)/list\?title_no=(?P<eid>[0-9]+)"))
+    )
 
     async def get_recent(self, limit: int = 25) -> Iterable[WebtoonEpisode]:
         return []
@@ -74,12 +85,12 @@ class WebtoonSource(Source["WebtoonEpisode"]):
                 results.append(
                     Webtoon(
                         name=name,
-                        url=self._webtoon_url_ft.format(eid=eid),
+                        url=self._webtoon_odl_url_ft.format(eid=eid),
                         eid=eid,
                         author=author,
                         likes=likes,
                         genre=genre,
-                        type="o",
+                        category=None,
                     )
                 )
 
@@ -94,76 +105,59 @@ class WebtoonSource(Source["WebtoonEpisode"]):
                 results.append(
                     Webtoon(
                         name=name,
-                        url=self._canva_url_ft.format(eid=eid),
+                        url=self._canva_old_url_ft.format(eid=eid),
                         eid=eid,
                         author=author,
                         genre=genre,
-                        type="c",
+                        category="challenge",
                     )
                 )
 
         return results
 
-    async def get_episodes(self, webtoon: Webtoon) -> Iterable[WebtoonEpisode]:
-        raise NotImplementedError
+    async def _fetch_webtoon(self, webtoon: Webtoon) -> None:
+        if not webtoon.internal.fetched:
+            res = await self.client.get(webtoon.url, cookies=self._cookies, follow_redirects=True)
+            url = str(res.url)
+            print(url)
+            match = self._webtoon_url_reg.match(url)
+            if not match:
+                raise ValueError(f"Invalid webtoon url: {webtoon.url}")
 
+            webtoon.url = url
+            webtoon.category = match.group("category")
 
-# def get_img_urls(url, episode, eid):
-#     full_url = f"{url}a/viewer?title_no={eid}&episode_no={episode}"
-#     req = requests.get(full_url, cookies=COOKIES)
-#     soup = BeautifulSoup(req.content, features="lxml")
-#     content = soup.find("div", {"id": "content"})
-#     imagelist = content.find("div", {"id": "_imageList"})
-#     images = []
-#     if imagelist is not None:
-#         for img in imagelist.findAll("img", {"class": "_images"}):
-#             images.append(img["data-url"])
-#     return images, full_url
+            webtoon.internal.url_name = match.group("url_name")
+            webtoon.internal.fetched = True
 
+    async def _get_images_urls(self, webtoon: Webtoon, episode_number: int) -> AsyncIterable[str]:
+        await self._fetch_webtoon(webtoon)
 
-# def get_filetype(url):
-#     if url.endswith("/"):
-#         return url[:-1].split("/")[-1].split("?")[0].split(".")[-1]
-#     else:
-#         return url.split("/")[-1].split("?")[0].split(".")[-1]
+        res = await self.client.get(
+            self._webtoon_viewer_url_ft.format(category=webtoon.category, url_name=webtoon.internal.url_name),
+            cookies=self._cookies,
+            params={"title_no": webtoon.eid, "episode_no": episode_number},
+            follow_redirects=True,
+        )
 
+        soup = BeautifulSoup(res.content, features="lxml")
+        content = soup.find("div", {"id": "content"})
+        imagelist = content.find("div", {"id": "_imageList"})  # type: ignore
 
-# def download_imgs(urls, referer, name):
-#     names = []
-#     c = 1
-#     for url in tqdm.tqdm(urls):
-#         ext = get_filetype(url)
-#         req = requests.get(url, headers={"Referer": referer})
-#         assert req.status_code == 200
-#         with open(f"{name}-{c}.{ext}", "wb") as file:
-#             file.write(req.content)
-#         names.append(f"{name}-{c}.{ext}")
-#         c += 1
-#     return names
+        if imagelist is not None:
+            for img in imagelist.findAll("img", {"class": "_images"}):  # type: ignore
+                yield img["data-url"]
 
-
-# def download_imgs_of(urls, referer, name):
-#     c = 1
-#     for url in tqdm.tqdm(urls):
-#         ext = get_filetype(url)
-#         req = requests.get(url, headers={"Referer": referer})
-#         assert req.status_code == 200
-#         if ext != "gif":
-#             arr = np.asarray(bytearray(req.content), dtype=np.uint8)
-#             img = cv2.imdecode(arr, 1)
-#         else:
-#             with open("temp.gif", "wb") as f:
-#                 f.write(req.content)
-#             img = np.array(imageio.imread("temp.gif"))[:, :, :-1]
-#             os.remove("temp.gif")
-#         if c == 1:
-#             curr = img
-#         else:
-#             if img.shape[1] > curr.shape[1]:
-#                 img = img[:, : curr.shape[1] - img.shape[1], :]
-#             elif img.shape[1] < curr.shape[1]:
-#                 curr = curr[:, : img.shape[1] - curr.shape[1], :]
-#             curr = cv2.vconcat([curr, img])
-#         c += 1
-#     cv2.imwrite(name + ".png", curr)
-#     return name
+    async def get_images(self, webtoon: Webtoon, episode_number: int) -> AsyncIterable[io.BytesIO]:
+        async for img_url in self._get_images_urls(webtoon, episode_number):
+            res = await self.client.get(
+                img_url,
+                cookies=self._cookies,
+                follow_redirects=True,
+                headers={
+                    "Referer": self._webtoon_viewer_url_ft.format(
+                        category=webtoon.category, url_name=webtoon.internal.url_name
+                    )
+                },
+            )
+            yield io.BytesIO(res.content)
