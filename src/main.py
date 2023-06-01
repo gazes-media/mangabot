@@ -227,6 +227,16 @@ async def search_autocomplete(inter: discord.Interaction, current: str) -> list[
     return [app_commands.Choice(name=result.name, value=result.id) for result in results]
 
 
+@client.tree.command()
+async def get_status(inter: discord.Interaction) -> None:
+    tmp: list[str] = []
+    for aggregate in client.aggregates:
+        for src in aggregate.sources:
+            tmp.append(f"[{src.name}]({src.url}) : {src.status.value}")
+    embed = discord.Embed(title="Sources status :", description="\n".join(tmp))
+    await inter.response.send_message(embed=embed)
+
+
 @tasks.loop(hours=1)
 async def refresh_all():
     await client.refresh_aggregates()

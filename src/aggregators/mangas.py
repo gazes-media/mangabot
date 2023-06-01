@@ -31,7 +31,7 @@ class MangaAggregator(SourceAggregator[MangaSource]):
             for element in chain(*self.cache.values()):
                 if element.id not in tmp:
                     tmp.add(element.id)
-                yield element
+                    yield element
 
         def processor(entry: str | Manga) -> str:
             if isinstance(entry, str):
