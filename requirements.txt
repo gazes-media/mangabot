@@ -5,5 +5,5 @@ feedparser==6.0.10
 python-Levenshtein
 thefuzz
 lxml
-git+https://github.com/AiroPi/mediasub.git
 cachetools
+git+https://github.com/AiroPi/mediasub.git

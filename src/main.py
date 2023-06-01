@@ -162,9 +162,9 @@ async def on_episode(source: AnimeSource, episode: Episode):
     embed.add_field(name="Language", value=episode.language or "unknown", inline=True)
     embed.add_field(name="Source", value=source.name, inline=True)
 
-    await client.anime_aggregate.webhook.send(
+    await client.anime_aggregate.channel.create_thread(
+        name=f"{episode.anime.name[:50]} - {episode.name}",
         embed=embed,
-        thread_name=f"{episode.anime.name[:50]} - {episode.name}",
         content=", ".join(f"<@{user_id}>" for user_id, in results),
     )
 
@@ -184,9 +184,9 @@ async def on_webtoon(source: WebtoonSource, episode: WebtoonEpisode):
     embed.add_field(name="Language", value=episode.language or "unknown", inline=True)
     embed.add_field(name="Source", value=source.name, inline=True)
 
-    await client.anime_aggregate.webhook.send(
+    await client.anime_aggregate.channel.create_thread(
+        name=f"{episode.webtoon.name[:50]} - {episode.name}",
         embed=embed,
-        thread_name=f"{episode.webtoon.name[:50]} - {episode.name}",
         content=", ".join(f"<@{user_id}>" for user_id, in results),
     )
 
