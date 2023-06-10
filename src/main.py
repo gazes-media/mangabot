@@ -1,16 +1,17 @@
 import asyncio
 import logging
 import os
-from typing import Literal, Self
+from typing import Literal
 
 import aiosqlite
 import discord
 import mediasub
-from discord import File, app_commands, ui
+from discord import File, TextChannel, app_commands, ui
 from discord.ext import tasks
 from discord.utils import MISSING
 
 from aggregators import AnimeAggregator, MangaAggregator, WebtoonAggregator
+from constants import SPAM_CHANNEL
 from database_patchs import patchs
 from sources.animes import AnimeSource, Episode, Gaze
 from sources.mangas import Chapter, MangaScanDotWS, MangaSource, ScanFRDotOrg, ScanMangaVFDotWS, ScanVFDotNet
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 class MangaBot(discord.AutoShardedClient):
     db: aiosqlite.Connection
+    spam_channel: TextChannel
     manga_aggregate = MangaAggregator(MangaScanDotWS(), ScanFRDotOrg(), ScanMangaVFDotWS(), ScanVFDotNet())
     anime_aggregate = AnimeAggregator(Gaze())
     webtoon_aggregate = WebtoonAggregator(WebtoonSource())
@@ -47,6 +49,8 @@ class MangaBot(discord.AutoShardedClient):
 
         for agg in self.aggregates:
             await agg.setup(self)
+
+        self.spam_channel = self.get_channel(SPAM_CHANNEL) or await self.fetch_channel(SPAM_CHANNEL)
 
     async def refresh_aggregates(self):
         for agg in self.aggregates:
@@ -123,9 +127,6 @@ async def check_subscription(_id: str):
 async def on_chapter(source: MangaSource, chapter: Chapter):
     await client.wait_until_ready()
 
-    if not (results := await check_subscription(chapter.manga.id)):
-        return
-
     embed = discord.Embed(
         title=f"New chapter of {chapter.manga.name} !",
         description=f"**{chapter.manga.name}** - chapter {chapter.number}",
@@ -135,10 +136,16 @@ async def on_chapter(source: MangaSource, chapter: Chapter):
     embed.add_field(name="Chapter name", value=chapter.name, inline=True)
     embed.add_field(name="Source", value=source.name, inline=True)
 
+    await client.spam_channel.send(embed=embed, view=SubscribeView(chapter.manga.id))
+
+    if not (results := await check_subscription(chapter.manga.id)):
+        return
+
     message = await client.manga_aggregate.channel.create_thread(
         name=f"{chapter.manga.name[:80]} - chapter {chapter.number}",
         embed=embed,
         content=", ".join(f"<@{user_id}>" for user_id, in results),
+        view=SubscribeView(chapter.manga.id),
     )
 
     for chunk in chunker(await source.get_pages(chapter), 10):
@@ -151,9 +158,6 @@ async def on_chapter(source: MangaSource, chapter: Chapter):
 async def on_episode(source: AnimeSource, episode: Episode):
     await client.wait_until_ready()
 
-    if not (results := await check_subscription(episode.anime.id)):
-        return
-
     embed = discord.Embed(
         title=f"New chapter of {episode.anime.name} !",
         description=f"**{episode.anime.name[:80]}** - episode {episode.number}",
@@ -162,19 +166,22 @@ async def on_episode(source: AnimeSource, episode: Episode):
     embed.add_field(name="Language", value=episode.language or "unknown", inline=True)
     embed.add_field(name="Source", value=source.name, inline=True)
 
+    await client.spam_channel.send(embed=embed, view=SubscribeView(episode.anime.id))
+
+    if not (results := await check_subscription(episode.anime.id)):
+        return
+
     await client.anime_aggregate.channel.create_thread(
         name=f"{episode.anime.name[:50]} - {episode.name}",
         embed=embed,
         content=", ".join(f"<@{user_id}>" for user_id, in results),
+        view=SubscribeView(episode.anime.id),
     )
 
 
 @client.mediasub.sub_to(*client.webtoon_aggregate.sources)
 async def on_webtoon(source: WebtoonSource, episode: WebtoonEpisode):
     await client.wait_until_ready()
-
-    if not (results := await check_subscription(episode.webtoon.id)):
-        return
 
     embed = discord.Embed(
         title=f"New episode of {episode.webtoon.name} !",
@@ -184,10 +191,16 @@ async def on_webtoon(source: WebtoonSource, episode: WebtoonEpisode):
     embed.add_field(name="Language", value=episode.language or "unknown", inline=True)
     embed.add_field(name="Source", value=source.name, inline=True)
 
+    await client.spam_channel.send(embed=embed, view=SubscribeView(episode.webtoon.id))
+
+    if not (results := await check_subscription(episode.webtoon.id)):
+        return
+
     await client.anime_aggregate.channel.create_thread(
         name=f"{episode.webtoon.name[:50]} - {episode.name}",
         embed=embed,
         content=", ".join(f"<@{user_id}>" for user_id, in results),
+        view=SubscribeView(episode.webtoon.id),
     )
 
 
@@ -213,7 +226,7 @@ async def search(inter: discord.Interaction, _type: Literal["manga", "anime", "w
     if content.thumbnail:
         embed.set_thumbnail(url=content.thumbnail)
 
-    await inter.response.send_message(embed=embed, view=SubscribeView(content.id, inter))
+    await inter.response.send_message(embed=embed, view=SubscribeView(content.id))
 
 
 @search.autocomplete(name="_id")
@@ -242,32 +255,42 @@ async def refresh_all():
     await client.refresh_aggregates()
 
 
+@client.event
+async def on_interaction(inter: discord.Interaction):
+    if inter.type != discord.InteractionType.component:
+        return
+    if inter.data["component_type"] != discord.ComponentType.button.value:
+        return
+    if not inter.data["custom_id"].startswith("toggle_subscription"):
+        return
+
+    # keep only text behind toggle_subscription
+    series_id = inter.data["custom_id"][len("toggle_subscription::") :]
+    print(series_id)
+    async with client.db.cursor() as cursor:
+        sql = """SELECT 1 FROM subscription WHERE user_id = ? AND series_id = ?"""
+        req = await cursor.execute(sql, (inter.user.id, series_id))
+        res = await req.fetchone()
+        if res is not None:
+            sql = """DELETE FROM subscription WHERE user_id = ? AND series_id = ?"""
+            await cursor.execute(sql, (inter.user.id, series_id))
+            await inter.response.send_message("You have been unsubscribed !", ephemeral=True)
+        else:
+            sql = """INSERT INTO subscription VALUES (?, ?)"""
+            await cursor.execute(sql, (inter.user.id, series_id))
+            await inter.response.send_message("You have been subscribed !", ephemeral=True)
+    await client.db.commit()
+
+
 class SubscribeView(ui.View):
-    def __init__(self, series_id: str, original_inter: discord.Interaction):
-        self.series_id = series_id
-        self.original_inter = original_inter
-        super().__init__(timeout=180)
-
-    @ui.button(label="Subscribe/Unsubscribe", style=discord.ButtonStyle.primary)
-    async def toggle_subscription(self, inter: discord.Interaction, button: discord.ui.Button[Self]):
-        del button  # unused
-        async with client.db.cursor() as cursor:
-            sql = """SELECT 1 FROM subscription WHERE user_id = ? AND series_id = ?"""
-            req = await cursor.execute(sql, (inter.user.id, self.series_id))
-            res = await req.fetchone()
-            if res is not None:
-                sql = """DELETE FROM subscription WHERE user_id = ? AND series_id = ?"""
-                await cursor.execute(sql, (inter.user.id, self.series_id))
-                await inter.response.send_message("You have been unsubscribed !", ephemeral=True)
-            else:
-                sql = """INSERT INTO subscription VALUES (?, ?)"""
-                await cursor.execute(sql, (inter.user.id, self.series_id))
-                await inter.response.send_message("You have been subscribed !", ephemeral=True)
-        await client.db.commit()
-
-    async def on_timeout(self):
-        self.toggle_subscription.disabled = True
-        await self.original_inter.edit_original_response(view=self)
+    def __init__(self, series_id: str):
+        super().__init__(timeout=0)
+        button = ui.Button(
+            label="Subscribe/Unsubscribe",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"toggle_subscription::{series_id}",
+        )
+        self.add_item(button)
 
 
 if __name__ == "__main__":
