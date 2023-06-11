@@ -69,6 +69,16 @@ class Gaze(AnimeSource):
             name=raw["title"],
             url=self._anime_url.format(lang=raw["lang"], anime_id=raw["id"]),
             internal=AnimeInternal(id=raw["id"], lang=raw["lang"]),
+            search_keywords="".join(
+                raw[key]
+                for key in ("title", "title_english", "title_romanji", "title_french", "others")
+                if raw.get(key)
+            ),
+            score=raw["score"],
+            popularity=raw["popularity"],
+            genres=raw["genres"],
+            thumbnail=raw["url_image"],
+            language=raw["lang"],
         )
 
     async def get_animes(self) -> Iterable[Anime]:

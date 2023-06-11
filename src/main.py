@@ -235,9 +235,7 @@ async def search_autocomplete(inter: discord.Interaction, current: str) -> list[
         return [app_commands.Choice(name="Please first select a type", value="")]
 
     aggregate = dial[inter.namespace.type]
-    results = await aggregate.search(current)
-
-    return [app_commands.Choice(name=result.name, value=result.id) for result in results]
+    return await aggregate.search(current)
 
 
 @client.tree.command()

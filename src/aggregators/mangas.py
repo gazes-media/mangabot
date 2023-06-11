@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from itertools import chain
 from typing import TypeAlias
 
+from discord.app_commands import Choice
 from thefuzz import process
 
 from constants import MANGA_CHANNEL
@@ -24,7 +25,7 @@ class MangaAggregator(SourceAggregator[MangaSource]):
         cache = await asyncio.gather(*(src.get_mangas() for src in self.sources))
         self.cache = {src: tuple(available) for src, available in zip(self.sources, cache)}
 
-    async def search(self, query: str) -> Sequence[Manga]:
+    async def search(self, query: str) -> Sequence[Choice]:
         tmp = set[str]()
 
         def without_duplicates():
@@ -38,13 +39,14 @@ class MangaAggregator(SourceAggregator[MangaSource]):
                 return entry
             return entry.name
 
+        results: list[tuple[Manga, int]]
         if query == "":
             iterable = without_duplicates()
-            results: list[tuple[Manga, int]] = [(e, 0) for _ in range(25) if (e := next(iterable, None)) is not None]
+            results = [(e, 0) for _ in range(25) if (e := next(iterable, None)) is not None]
         else:
             results = process.extract(query, without_duplicates(), processor=processor, limit=25)
 
-        return [res[0] for res in results]
+        return [Choice(name=res[0].name, value=res[0].id) for res in results]
 
     def concat_contents(self, contents: list[Manga]) -> Manga:
         return contents[0]

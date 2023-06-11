@@ -4,6 +4,7 @@ from logging import getLogger
 from typing import Generic, Protocol, TypeVar
 
 import discord
+from discord.app_commands import Choice
 
 S = TypeVar("S")
 
@@ -54,7 +55,7 @@ class SourceAggregator(ABC, Generic[S]):
         pass
 
     @abstractmethod
-    async def search(self, query: str) -> Sequence[Content]:
+    async def search(self, query: str) -> Sequence[Choice]:
         ...
 
     @abstractmethod

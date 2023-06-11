@@ -20,12 +20,17 @@ class Anime:
     url: str
     thumbnail: str | None = None
     description: str | None = None
+    search_keywords: list[str] | None = None
+    language: str | None = None
+    score: float | None = None
+    popularity: float | None = None
+    genres: list[str] | None = None
 
     internal: Any = field(repr=False, default=None)
 
     @property
     def id(self) -> str:
-        return f"ANIME/{normalize(self.name)}"
+        return f"ANIME/{normalize(self.name)[:80]}/{normalize(self.language) if self.language else 'unknown'}"
 
 
 @dataclass(kw_only=True)
