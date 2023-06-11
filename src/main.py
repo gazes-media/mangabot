@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 import aiosqlite
 import discord
@@ -17,7 +19,11 @@ from sources.animes import AnimeSource, Episode, Gaze
 from sources.mangas import Chapter, MangaScanDotWS, MangaSource, ScanFRDotOrg, ScanMangaVFDotWS, ScanVFDotNet
 from sources.webtoons.webtoon import WebtoonEpisode, WebtoonSource
 from utils import BraceMessage as __
-from utils import chunker
+from utils import chunker, hash_id
+
+if TYPE_CHECKING:
+    from discord.types.interactions import MessageComponentInteractionData
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +56,25 @@ class MangaBot(discord.AutoShardedClient):
         for agg in self.aggregates:
             await agg.setup(self)
 
-        self.spam_channel = self.get_channel(SPAM_CHANNEL) or await self.fetch_channel(SPAM_CHANNEL)
+        tmp = self.get_channel(SPAM_CHANNEL) or await self.fetch_channel(SPAM_CHANNEL)
+        if not isinstance(tmp, TextChannel):
+            raise TypeError("SPAM_CHANNEL is not a TextChannel")
+        self.spam_channel = tmp
 
     async def refresh_aggregates(self):
-        for agg in self.aggregates:
-            await agg.refresh()
+        res = await asyncio.gather(*(agg.refresh() for agg in self.aggregates), return_exceptions=True)
+        for i, r in enumerate(res):
+            if isinstance(r, Exception):
+                logger.error(__("Error while refreshing aggregate {}: {}", self.aggregates[i], r))
 
     async def init_db(self):
         async with self.db.cursor() as cursor:
             sql = """
             CREATE TABLE IF NOT EXISTS subscription (
                 user_id INTEGER,
-                series_id TEXT,
-                PRIMARY KEY (user_id, series_id)
+                series_hash TEXT,
+                series_type TEXT,
+                PRIMARY KEY (user_id, series_hash)
             )
             """
             await cursor.execute(sql)
@@ -117,9 +129,9 @@ client = MangaBot()
 
 
 async def check_subscription(_id: str):
-    sql = "SELECT user_id FROM subscription WHERE series_id = ?"
+    sql = "SELECT user_id FROM subscription WHERE series_hash = ?"
     async with client.db.cursor() as cursor:
-        req = await cursor.execute(sql, (_id,))
+        req = await cursor.execute(sql, (hash_id(_id),))
         return await req.fetchall()
 
 
@@ -215,7 +227,10 @@ dial = {
 @app_commands.rename(_type="type", _id="name")
 async def search(inter: discord.Interaction, _type: Literal["manga", "anime", "webtoon"], _id: str):
     aggregate = dial[_type]
-    content, sources = await aggregate.retrieve(_id)
+    tmp = await aggregate.retrieve(_id=_id)
+    if not tmp:
+        return await inter.response.send_message("No result found")
+    content, sources = tmp
 
     embed = discord.Embed(
         title=content.name[:80],
@@ -235,7 +250,7 @@ async def search_autocomplete(inter: discord.Interaction, current: str) -> list[
         return [app_commands.Choice(name="Please first select a type", value="")]
 
     aggregate = dial[inter.namespace.type]
-    return await aggregate.search(current)
+    return list(await aggregate.search(current))
 
 
 @client.tree.command()
@@ -248,6 +263,27 @@ async def get_status(inter: discord.Interaction) -> None:
     await inter.response.send_message(embed=embed)
 
 
+@client.tree.command()
+async def get_subscriptions(inter: discord.Interaction) -> None:
+    sql = """SELECT series_hash, series_type FROM subscription WHERE user_id = ?"""
+    ref = {
+        "ANIME": client.anime_aggregate,
+        "MANGA": client.manga_aggregate,
+        "WEBTOON": client.webtoon_aggregate,
+    }
+    req = await client.db.execute(sql, (inter.user.id,))
+    res = await req.fetchall()
+
+    embed = discord.Embed(title="Your subscriptions :")
+    for series_hash, series_type in res:
+        content = await ref[series_type].retrieve(_hash=series_hash)
+        if not content:
+            continue
+        embed.add_field(name=content[0].name, value=content[0].url)
+
+    await inter.response.send_message(embed=embed)
+
+
 @tasks.loop(hours=1)
 async def refresh_all():
     await client.refresh_aggregates()
@@ -257,36 +293,38 @@ async def refresh_all():
 async def on_interaction(inter: discord.Interaction):
     if inter.type != discord.InteractionType.component:
         return
-    if inter.data["component_type"] != discord.ComponentType.button.value:
+
+    data: MessageComponentInteractionData = inter.data  # type: ignore
+    if data["component_type"] != discord.ComponentType.button.value:
         return
-    if not inter.data["custom_id"].startswith("toggle_subscription"):
+    if not data["custom_id"].startswith("toggle_subscription"):
         return
 
     # keep only text behind toggle_subscription
-    series_id = inter.data["custom_id"][len("toggle_subscription::") :]
-    print(series_id)
+    _, series_type, series_hash = data["custom_id"].split("::")
     async with client.db.cursor() as cursor:
-        sql = """SELECT 1 FROM subscription WHERE user_id = ? AND series_id = ?"""
-        req = await cursor.execute(sql, (inter.user.id, series_id))
+        sql = """SELECT 1 FROM subscription WHERE user_id = ? AND series_hash = ?"""
+        req = await cursor.execute(sql, (inter.user.id, series_hash))
         res = await req.fetchone()
         if res is not None:
-            sql = """DELETE FROM subscription WHERE user_id = ? AND series_id = ?"""
-            await cursor.execute(sql, (inter.user.id, series_id))
+            sql = """DELETE FROM subscription WHERE user_id = ? AND series_hash = ?"""
+            await cursor.execute(sql, (inter.user.id, series_hash))
             await inter.response.send_message("You have been unsubscribed !", ephemeral=True)
         else:
-            sql = """INSERT INTO subscription VALUES (?, ?)"""
-            await cursor.execute(sql, (inter.user.id, series_id))
+            sql = """INSERT INTO subscription VALUES (?, ?, ?)"""
+            await cursor.execute(sql, (inter.user.id, series_hash, series_type))
             await inter.response.send_message("You have been subscribed !", ephemeral=True)
     await client.db.commit()
 
 
 class SubscribeView(ui.View):
     def __init__(self, series_id: str):
+        _type, *_ = series_id.split("/")
         super().__init__(timeout=0)
-        button = ui.Button(
+        button = ui.Button[Self](
             label="Subscribe/Unsubscribe",
             style=discord.ButtonStyle.primary,
-            custom_id=f"toggle_subscription::{series_id}",
+            custom_id=f"toggle_subscription::{_type}::{hash_id(series_id)}",
         )
         self.add_item(button)
 

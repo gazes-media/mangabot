@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from logging import getLogger
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeAlias, TypeVar, overload
 
 import discord
 from discord.app_commands import Choice
 
 S = TypeVar("S")
+C = TypeVar("C")
+RetrieveType: TypeAlias = tuple[C, Sequence[tuple[S, C]]]
 
 
 logger = getLogger(__name__)
@@ -52,12 +56,21 @@ class SourceAggregator(ABC, Generic[S]):
 
     async def refresh(self):
         """This function will be called every x time if a cache is needed."""
-        pass
 
     @abstractmethod
-    async def search(self, query: str) -> Sequence[Choice]:
+    async def search(self, query: str) -> Sequence[Choice[str]]:
+        ...
+
+    @overload
+    @abstractmethod
+    async def retrieve(self, *, _id: str) -> tuple[Content, Sequence[tuple[S, Content]]] | None:
+        ...
+
+    @overload
+    @abstractmethod
+    async def retrieve(self, *, _hash: str) -> tuple[Content, Sequence[tuple[S, Content]]] | None:
         ...
 
     @abstractmethod
-    async def retrieve(self, _id: str) -> tuple[Content, Sequence[tuple[S, Content]]]:
+    async def retrieve(self, *, _id: str | None = None, _hash: str | None = None) -> RetrieveType[Content, S] | None:
         ...

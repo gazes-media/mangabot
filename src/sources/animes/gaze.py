@@ -34,6 +34,8 @@ class Gaze(AnimeSource):
         r"https://deril-fr.github.io/anime/(?P<lang>[^/]+)/(?P<anime_id>\d+)/episode/(?P<episode>\d+)"
     )
 
+    search_fields = {"title_english": 2, "title_romanji": 2, "title_french": 2, "others": 1}
+
     def _get_episode_from_rss_item(self, item: Any) -> Episode:
         logger.debug(__("Extracting infos from : {}", item.link))
 
@@ -69,11 +71,9 @@ class Gaze(AnimeSource):
             name=raw["title"],
             url=self._anime_url.format(lang=raw["lang"], anime_id=raw["id"]),
             internal=AnimeInternal(id=raw["id"], lang=raw["lang"]),
-            search_keywords="".join(
-                raw[key]
-                for key in ("title", "title_english", "title_romanji", "title_french", "others")
-                if raw.get(key)
-            ),
+            search_keywords={
+                key: raw[key] for key in ("title_english", "title_romanji", "title_french", "others") if raw.get(key)
+            },
             score=raw["score"],
             popularity=raw["popularity"],
             genres=raw["genres"],

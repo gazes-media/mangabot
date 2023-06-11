@@ -9,6 +9,8 @@ from mediasub.utils import normalize
 
 
 class AnimeSource(Source["Episode"]):
+    search_fields: dict[str, int] = {}
+
     @abstractmethod
     async def get_animes(self) -> Iterable[Anime]:
         ...
@@ -20,7 +22,7 @@ class Anime:
     url: str
     thumbnail: str | None = None
     description: str | None = None
-    search_keywords: list[str] | None = None
+    search_keywords: dict[str, str] | None = None
     language: str | None = None
     score: float | None = None
     popularity: float | None = None
@@ -30,7 +32,7 @@ class Anime:
 
     @property
     def id(self) -> str:
-        return f"ANIME/{normalize(self.name)[:80]}/{normalize(self.language) if self.language else 'unknown'}"
+        return f"ANIME/{normalize(self.name)}/{normalize(self.language) if self.language else 'unknown'}"
 
 
 @dataclass(kw_only=True)

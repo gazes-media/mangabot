@@ -1,3 +1,4 @@
+import hashlib
 from itertools import chain, islice
 from typing import Any, Generator, Iterable, Sequence, TypeVar
 
@@ -25,3 +26,7 @@ def chunker(iterable: Iterable[T], nb: int) -> Generator[Sequence[T], None, None
         except StopIteration:
             return
         yield tuple(chain((first_el,), chunk_it))
+
+
+def hash_id(_id: str) -> str:
+    return hashlib.md5(_id.encode(), usedforsecurity=False).hexdigest()

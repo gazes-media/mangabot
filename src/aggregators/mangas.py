@@ -1,62 +1,90 @@
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Sequence
-from itertools import chain
 from typing import TypeAlias
 
 from discord.app_commands import Choice
-from thefuzz import process
+from lunr.builder import Builder
+from lunr.index import Index
+from lunr.query import Query, QueryPresence
+from lunr.stemmer import stemmer
+from lunr.tokenizer import Tokenizer
+from lunr.trimmer import trimmer
 
 from constants import MANGA_CHANNEL
 from sources.mangas.base import Manga, MangaSource
+from utils import hash_id
 
-from .base import SourceAggregator
+from .base import RetrieveType, SourceAggregator
 
-CacheT: TypeAlias = dict[MangaSource, tuple[Manga, ...]]
+CacheType: TypeAlias = dict[MangaSource, dict[str, Manga]]
 
 
 class MangaAggregator(SourceAggregator[MangaSource]):
     channel_id = MANGA_CHANNEL
+    idx: Index
 
     def __init__(self, *sources: MangaSource):
         super().__init__(*sources)
-        self.cache: CacheT = {s: tuple() for s in sources}
+        self.cache: CacheType = {}
 
     async def refresh(self):
-        cache = await asyncio.gather(*(src.get_mangas() for src in self.sources))
-        self.cache = {src: tuple(available) for src, available in zip(self.sources, cache)}
+        _cache: list[list[Manga]] = await asyncio.gather(*(src.get_mangas() for src in self.sources))
 
-    async def search(self, query: str) -> Sequence[Choice]:
+        builder = Builder()
+        builder.pipeline.add(trimmer)
+        builder.search_pipeline.add(stemmer)
+        builder.ref("id")
+        builder.field("name", boost=3)
+
+        self.cache = {s: {} for s in self.sources}
         tmp = set[str]()
+        for i, mangas in enumerate(_cache):
+            for manga in mangas:
+                hashed = hash_id(manga.id)
+                self.cache[self.sources[i]][hashed] = manga
+                if manga.id not in tmp:
+                    tmp.add(manga.id)
+                    builder.add(
+                        dict(id=hashed, name=manga.name),
+                    )
 
-        def without_duplicates():
-            for element in chain(*self.cache.values()):
-                if element.id not in tmp:
-                    tmp.add(element.id)
-                    yield element
+        self.idx = builder.build()
 
-        def processor(entry: str | Manga) -> str:
-            if isinstance(entry, str):
-                return entry
-            return entry.name
+    async def search(self, query: str) -> Sequence[Choice[str]]:
+        # TODO(airo.pi_): Manga search and Anime search are almost identical, so we should probably refactor this
+        if len(query) < 3:
+            return []
 
-        results: list[tuple[Manga, int]]
-        if query == "":
-            iterable = without_duplicates()
-            results = [(e, 0) for _ in range(25) if (e := next(iterable, None)) is not None]
-        else:
-            results = process.extract(query, without_duplicates(), processor=processor, limit=25)
+        query_obj = Query(self.idx.fields)
+        for token in Tokenizer(query):
+            query_obj.term(str(token), presence=QueryPresence.REQUIRED, wildcard=Query.WILDCARD_TRAILING)
 
-        return [Choice(name=res[0].name, value=res[0].id) for res in results]
+        results = self.idx.query(query_obj)
+
+        # the "tmp" variable is None or a tuple, and we use a tricky "or" with another walrus operator to set "anime"
+        # to the Anime
+        return [
+            Choice(name=f"{manga.name[:90] + '…' * (len(manga.name) > 90)}", value=manga.id)
+            for res in results
+            if (tmp := await self.retrieve(_hash=res["ref"])) and (manga := tmp[0])
+        ][:25]
 
     def concat_contents(self, contents: list[Manga]) -> Manga:
         return contents[0]
 
-    async def retrieve(self, _id: str) -> tuple[Manga, Sequence[tuple[MangaSource, Manga]]]:
-        sources: list[MangaSource] = []
-        contents: list[Manga] = []
+    async def retrieve(
+        self, *, _id: str | None = None, _hash: str | None = None
+    ) -> RetrieveType[Manga, MangaSource] | None:
+        if _hash is None:
+            assert _id is not None
+            _hash = hash_id(_id)
 
-        for source in self.sources:
-            if content := next((manga for manga in self.cache[source] if manga.id == _id), None):
-                contents.append(content)
-                sources.append(source)
+        sources: list[MangaSource] = [s for s in self.sources if _hash in self.cache[s]]
+        if not sources:
+            return None
+
+        contents: list[Manga] = [self.cache[s][_hash] for s in sources]
+
         return self.concat_contents(contents), tuple(zip(sources, contents))
