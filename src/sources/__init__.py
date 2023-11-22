@@ -43,4 +43,4 @@ class ExtendedSource(PollSource):
 
 
 from .animes import Gazes as Gazes
-from .mangas import MangaScanDotMe as MangaScanDotMe, ScanVFDotNet as ScanVFDotNet
+from .mangas import MangaScanDotMe as MangaScanDotMe, ScanMangaVFDotMe as ScanMangaVFDotMe, ScanVFDotNet as ScanVFDotNet

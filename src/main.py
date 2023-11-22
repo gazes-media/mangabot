@@ -15,7 +15,7 @@ from discord.utils import MISSING
 from constants import SPAM_CHANNEL, SPREAD_CHANNEL
 from database_patchs import patchs
 from searcher import Searcher, SeriesInfos
-from sources import Content, ExtendedSource, Gazes, ScanVFDotNet
+from sources import Content, ExtendedSource, Gazes, MangaScanDotMe, ScanMangaVFDotMe, ScanVFDotNet
 from utils import BraceMessage as __
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class MangaBot(discord.AutoShardedClient):
     db: aiosqlite.Connection
     spam_channel: TextChannel
     spread_channel: ForumChannel
-    sources = [Gazes(), ScanVFDotNet()]
+    sources = [Gazes(), ScanVFDotNet(), MangaScanDotMe(), ScanMangaVFDotMe()]
     searcher = Searcher(*sources)
 
     def __init__(self):

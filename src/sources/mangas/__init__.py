@@ -2,7 +2,7 @@
 # from .base import Manga as Manga
 # from .base import MangaSource as MangaSource
 # from .base import Page as Page
-# from .scanfrdotorg import ScanFRDotOrg as ScanFRDotOrg
 # from .scanmangavfdotws import ScanMangaVFDotWS as ScanMangaVFDotWS
-from .mangascandotws import MangaScanDotMe as MangaScanDotMe
+from .mangascandotme import MangaScanDotMe as MangaScanDotMe
+from .scanmangavfdotme import ScanMangaVFDotMe as ScanMangaVFDotMe
 from .scanvfdotnet import ScanVFDotNet as ScanVFDotNet
