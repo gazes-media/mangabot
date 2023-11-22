@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: ./Dockerfile
       target: prod
+    image: ghcr.io/deril-fr/mangabot:main
     env_file:
       - .env
     tty: true
