@@ -6,10 +6,10 @@ from discord.app_commands import Choice
 from constants import WEBTOON_CHANNEL
 from sources.webtoons import Webtoon, WebtoonSource
 
-from .base import RetrieveType, SourceAggregator
+from .base import Researcher, RetrieveType
 
 
-class WebtoonAggregator(SourceAggregator[WebtoonSource]):
+class WebtoonResearcher(Researcher[WebtoonSource]):
     channel_id = WEBTOON_CHANNEL
 
     def __init__(self, *sources: WebtoonSource):

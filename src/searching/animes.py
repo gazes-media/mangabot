@@ -1,6 +1,7 @@
 import asyncio
+import logging
 from collections.abc import Sequence
-from typing import TypeAlias
+from typing import Iterable, TypeAlias
 
 from discord.app_commands import Choice
 from lunr.builder import Builder
@@ -12,14 +13,16 @@ from lunr.trimmer import trimmer
 
 from constants import ANIME_CHANNEL
 from sources.animes.base import Anime, AnimeSource
-from utils import hash_id
+from utils import BraceMessage as __, hash_id
 
-from .base import RetrieveType, SourceAggregator
+from .base import Researcher, RetrieveType
 
 CacheType: TypeAlias = dict[AnimeSource, dict[str, Anime]]
 
+logger = logging.getLogger(__name__)
 
-class AnimeAggregator(SourceAggregator[AnimeSource]):
+
+class AnimeResearcher(Researcher[AnimeSource]):
     channel_id = ANIME_CHANNEL
     idx: Index
 
@@ -28,7 +31,16 @@ class AnimeAggregator(SourceAggregator[AnimeSource]):
         self.cache: CacheType = {}
 
     async def refresh(self):
-        _cache: list[list[Anime]] = await asyncio.gather(*(src.get_animes() for src in self.sources))
+        _cache: list[Iterable[Anime]] = []
+        tasks = [src.get_animes() for src in self.sources]
+        for coroutine in asyncio.as_completed(tasks):
+            try:
+                _cache.append(await coroutine)
+            except Exception as e:
+                logger.error(f"Error while refreshing {type(self).__name__}.", exc_info=e)
+
+        if not _cache:
+            logger.warning(__("All sources unavailable or no sources for {}.", type(self).__name__))
 
         builder = Builder()
         builder.pipeline.add(trimmer)

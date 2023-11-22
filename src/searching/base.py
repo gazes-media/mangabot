@@ -34,13 +34,13 @@ class Content(Protocol):
         ...
 
 
-class SourceAggregator(ABC, Generic[S]):
+class Researcher(ABC, Generic[S]):
     webhook: discord.Webhook
     channel: discord.ForumChannel
     channel_id: int
 
     def __init__(self, *sources: S):
-        self.sources: tuple[S] = sources
+        self.sources: tuple[S, ...] = sources
 
     async def setup(self, client: discord.Client):
         channel = client.get_channel(self.channel_id) or await client.fetch_channel(self.channel_id)

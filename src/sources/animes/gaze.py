@@ -1,3 +1,4 @@
+import itertools
 import logging
 import re
 from dataclasses import dataclass
@@ -6,10 +7,13 @@ from urllib.parse import urljoin
 
 import feedparser
 import httpx
+from async_lru import alru_cache
 from mediasub import SourceDown
-from mediasub._logger import BraceMessage as __
+from mediasub.source import LastPollContext
+from mediasub.utils import normalize
 
-from .base import Anime, AnimeSource, Episode
+from sources import Content, ExtendedSource, Series
+from utils import BraceMessage as __
 
 logger = logging.getLogger(__name__)
 
@@ -17,71 +21,95 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AnimeInternal:
     id: int
-    lang: str
+    lang: str | None = None
 
 
-class Gaze(AnimeSource):
-    name = "Gaze"
-    url = "https://deril-fr.github.io/"
-    _base_url = "https://api.ketsuna.com/"
+class Gazes(ExtendedSource):
+    name = "Gazes"  # type: ignore  # TODO
+    url = "https://gazes.fr/"  # type: ignore  # TODO
+    _base_url = "https://api.gazes.fr/anime/"
 
     _rss_url = urljoin(_base_url, "animes/rss")
-    _all_url = urljoin(_base_url, "animes")
-    _anime_url = "https://deril-fr.github.io/anime/{lang}/{anime_id}"
-    _episode_url = "https://deril-fr.github.io/anime/{lang}/{anime_id}/episode/{episode}"
+    _seasons_url = urljoin(_base_url, "animes/seasons")
+    _anime_url = "https://gazes.fr/anime/{anime_id}"
+    _episode_url = "https://gazes.fr/anime/{anime_id}/episode/{episode}"
 
-    _link_regex = re.compile(
-        r"https://deril-fr.github.io/anime/(?P<lang>[^/]+)/(?P<anime_id>\d+)/episode/(?P<episode>\d+)"
-    )
+    _link_regex = re.compile(r"https://gazes.fr/anime/(?P<anime_id>\d+)/episode/(?P<episode>\d+)")
 
     search_fields = {"title_english": 2, "title_romanji": 2, "title_french": 2, "others": 1}
 
-    def _get_episode_from_rss_item(self, item: Any) -> Episode:
-        logger.debug(__("Extracting infos from : {}", item.link))
-
-        link_match = self._link_regex.match(item.link)
-        if not link_match:
-            raise ValueError(f"Invalid link: {item.link}")
-
-        anime = Anime(
-            name=item.title,
-            url=self._anime_url.format(lang=link_match["lang"], anime_id=link_match["anime_id"]),
-            internal=AnimeInternal(id=int(link_match["anime_id"]), lang=link_match["lang"]),
-        )
-
-        return Episode(
-            anime=anime,
-            name=item.description,
-            number=int(link_match["episode"]),
-            language=link_match["lang"],
-            url=item.link,
-        )
-
-    async def get_recent(self, limit: int = 25) -> Iterable[Episode]:
+    async def poll(self, last_poll_ctx: LastPollContext | None = None) -> Iterable[Content]:
         try:
             res = await self.client.get(self._rss_url)
         except httpx.HTTPError as e:
             raise SourceDown(e) from e
         feed: Any = feedparser.parse(res.text)
 
-        return (self._get_episode_from_rss_item(item) for item in feed.entries[:limit])
+        async def parse(item: Any) -> Content:
+            logger.debug(__("Extracting infos from : {}", item.link))
 
-    def _get_anime_from_json(self, raw: Any) -> Anime:
-        return Anime(
-            name=raw["title"],
-            url=self._anime_url.format(lang=raw["lang"], anime_id=raw["id"]),
-            internal=AnimeInternal(id=raw["id"], lang=raw["lang"]),
-            search_keywords={
-                key: raw[key] for key in ("title_english", "title_romanji", "title_french", "others") if raw.get(key)
-            },
-            score=raw["score"],
-            popularity=raw["popularity"],
-            genres=raw["genres"],
-            thumbnail=raw["url_image"],
-            language=raw["lang"],
+            link_match = self._link_regex.match(item.link)
+            if not link_match:
+                raise ValueError(f"Invalid link: {item.link}")
+
+            anime_raw = await self._get_anime(int(link_match["anime_id"]))
+
+            content = Content(
+                type="anime",
+                id_name=normalize(anime_raw["title"]),
+                identifiers=(
+                    normalize(item.title),
+                    str(link_match["episode"]),
+                ),
+                lang="vostfr",  # TODO: Add lang support
+                fields={
+                    "episode": link_match["episode"],
+                    "season": item.title,
+                    "url": item.link,
+                },
+            )
+
+            return content
+
+        return [await parse(item) for item in feed.entries[:25]]
+
+    @alru_cache
+    async def _fetch_seasons(self, lang: str | None = None) -> list[dict[str, Any]]:
+        params = {}
+        if lang is not None:
+            params["lang"] = lang
+        res = await self.client.get(self._seasons_url, params=params)
+        if res.status_code != 200 or (raw := res.json())["success"] is False:
+            raise SourceDown()
+        return raw["data"]
+
+    async def _fetch_anime(self, anime_id: str) -> dict[str, Any]:
+        res = await self.client.get(self._seasons_url, params={"id": anime_id})
+        if res.status_code != 200 or (raw := res.json())["success"] is False:
+            raise SourceDown()
+        return raw["data"][0]
+
+    async def _get_anime(self, anime_id: int) -> dict[str, Any]:
+        seasons = await self._fetch_seasons()
+        return next(season for season in seasons if anime_id in season["ids"])
+
+    async def get_all(self) -> Iterable[Series]:
+        self._fetch_seasons.cache_clear()
+        raw_vf = await self._fetch_seasons("vf")
+        raw_vostfr = await self._fetch_seasons("vostfr")
+
+        def parse_raw(raw: dict[str, Any], lang: str) -> Series:
+            return Series(
+                id_name=normalize(raw["title"]),
+                name=raw["title"],
+                aliases=[raw[field] for field in ("title_english", "title_romanji", "title_french") if raw.get(field)],
+                genres=raw["genres"],
+                thumbnail=raw.get("cover_url"),
+                lang=lang,
+                type="anime",
+            )
+
+        return itertools.chain(
+            (parse_raw(raw, "vf") for raw in raw_vf),
+            (parse_raw(raw, "vostfr") for raw in raw_vostfr),
         )
-
-    async def get_animes(self) -> Iterable[Anime]:
-        res = await self.client.get(self._all_url)
-
-        return (self._get_anime_from_json(raw) for raw in res.json())
