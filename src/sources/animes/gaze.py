@@ -38,7 +38,7 @@ class Gazes(ExtendedSource):
 
     search_fields = {"title_english": 2, "title_romanji": 2, "title_french": 2, "others": 1}
 
-    async def poll(self, last_poll_ctx: LastPollContext | None = None) -> Iterable[Content]:
+    async def pull(self, last_poll_ctx: LastPollContext | None = None) -> Iterable[Content]:
         try:
             res = await self.client.get(self._rss_url)
         except httpx.HTTPError as e:
