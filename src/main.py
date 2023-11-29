@@ -384,11 +384,11 @@ class SourceSelect(ui.View):
             if elements_type is DownloadBytes:
                 chunk = cast(list[DownloadBytes], chunk)
                 await inter.followup.send(
-                    files=[discord.File(d.data, filename=d.filename, spoiler=True) for d in chunk]
+                    files=[discord.File(d.data, filename=d.filename, spoiler=True) for d in chunk], ephemeral=False
                 )
             elif elements_type is DownloadUrl:
                 chunk = cast(list[DownloadUrl], chunk)
-                await inter.followup.send("\n".join(d.url for d in chunk))
+                await inter.followup.send("\n".join(d.url for d in chunk), ephemeral=False)
 
 
 if __name__ == "__main__":
