@@ -1,7 +1,7 @@
 import re
-from typing import Any
+from typing import Any, override
 
-from .scanvfdotnet import ScanVFDotNet
+from .scanvfdotnet import InternalData, PageRaw, ScanVFDotNet
 
 
 class MangaScanDotMe(ScanVFDotNet):
@@ -11,15 +11,25 @@ class MangaScanDotMe(ScanVFDotNet):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
 
-        # self._images_url = "https://scansmangas.me/scans/"
-        self._link_scrap_reg = re.compile(rf"{self._base_url}manga/(?P<manga_name>[\w\-.]+)/(?P<number>\d+(?:\.\d+)?)")
-        self._manga_link_reg = re.compile(rf"{self._base_url}manga/(?P<manga_name>[\w\-.]+)")
+        base_url = self._base_url.rstrip("/")
 
-    # def _page_from_raw(self, chapter: Chapter, raw: dict[str, Any]) -> Page:
-    #     url = raw["page_image"]
-    #     return Page(
-    #         chapter=chapter,
-    #         number=int(raw["page_slug"]),
-    #         url=url,
-    #         internal=PageInternal(filename=raw["page_image"].split("/")[-1]),
-    #     )
+        self._chapter_url_fmt = base_url + "/manga/{manga_name}/{chapter_nb}"
+        self._images_url_fmt = base_url + "/uploads/manga/{manga_name}/chapters/{chapter_nb}/{page_image}"
+
+        self._chapter_url_reg = re.compile(base_url + r"/manga/(?P<manga_name>[\w\-.]+)/(?P<number>\d+\.?\d*)")
+        self._manga_url_reg = re.compile(base_url + r"/manga/(?P<manga_name>[\w\-.]+)")
+
+        self.headers.update(
+            {
+                "Referer": self._base_url,
+                "Authority": "scansmangas.me",
+            }
+        )
+
+    def _get_page_url(self, internal: InternalData, chapter: str, page: PageRaw) -> str:
+        del internal, chapter  # unused
+        return page["page_image"]
+
+    @override
+    def _get_filename(self, page: PageRaw) -> str:
+        return page["page_image"].split("/")[-1]

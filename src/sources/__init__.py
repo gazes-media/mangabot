@@ -1,14 +1,18 @@
+import io
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal
+from typing import Any, AsyncGenerator, Iterable, Literal
 
-from mediasub.source import PollSource
+from mediasub.source import PullSource
+
+type Download = DownloadBytes | DownloadInProgress | DownloadUrl
 
 
 @dataclass(kw_only=True)
 class Series:
     id_name: str
     name: str
+    # season: str | None = None
     aliases: list[str] = field(default_factory=list)
     popularity: int | None = None
     description: str | None = None
@@ -16,6 +20,10 @@ class Series:
     genres: list[str] = field(default_factory=list)
     lang: str
     type: Literal["anime", "manga"]
+
+    @property
+    def ref(self) -> str:
+        return f"{self.type}/{self.id_name}/{self.lang}"
 
 
 @dataclass(kw_only=True)
@@ -36,10 +44,32 @@ class Content:
         return f"{self.type}/{self.id_name}/{self.lang}"
 
 
-class ExtendedSource(PollSource):
+class ExtendedSource(PullSource):
+    supports_download: bool = False
+
     @abstractmethod
     async def get_all(self) -> Iterable[Series]:
         ...
+
+    async def download(self, ref: str) -> AsyncGenerator[Download, None]:
+        raise NotImplementedError()
+        yield
+
+
+@dataclass
+class DownloadBytes:
+    data: io.BytesIO
+    filename: str
+
+
+@dataclass
+class DownloadInProgress:
+    progression: int
+
+
+@dataclass
+class DownloadUrl:
+    url: str
 
 
 from .animes import Gazes as Gazes

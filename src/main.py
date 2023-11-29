@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import os
-from typing import Self
+from typing import Self, cast
 
 import aiosqlite
 import discord
@@ -15,7 +16,18 @@ from discord.utils import MISSING
 from constants import SPAM_CHANNEL, SPREAD_CHANNEL
 from database_patchs import patchs
 from searcher import Searcher, SeriesInfos
-from sources import Content, ExtendedSource, Gazes, MangaScanDotMe, ScanMangaVFDotMe, ScanVFDotNet
+from sources import (
+    Content,
+    Download,
+    DownloadBytes,
+    DownloadInProgress,
+    DownloadUrl,
+    ExtendedSource,
+    Gazes,
+    MangaScanDotMe,
+    ScanMangaVFDotMe,
+    ScanVFDotNet,
+)
 from utils import BraceMessage as __
 
 logger = logging.getLogger(__name__)
@@ -25,7 +37,7 @@ class MangaBot(discord.AutoShardedClient):
     db: aiosqlite.Connection
     spam_channel: TextChannel
     spread_channel: ForumChannel
-    sources = [Gazes(), ScanVFDotNet(), MangaScanDotMe(), ScanMangaVFDotMe()]
+    sources: list[ExtendedSource] = [ScanVFDotNet(), Gazes(), MangaScanDotMe(), ScanMangaVFDotMe()]
     searcher = Searcher(*sources)
 
     def __init__(self):
@@ -52,6 +64,8 @@ class MangaBot(discord.AutoShardedClient):
         if not isinstance(tmp, ForumChannel):
             raise TypeError("SPREAD_CHANNEL is not a ForumChannel")
         self.spread_channel = tmp
+
+        self.add_view(DownloadView())
 
     async def init_db(self):
         async with self.db.cursor() as cursor:
@@ -115,27 +129,35 @@ class MangaBot(discord.AutoShardedClient):
 client = MangaBot()
 
 
+def series_embed(series_infos: SeriesInfos) -> discord.Embed:
+    embed = discord.Embed(
+        title=series_infos.name[:80],
+        description=series_infos.description or "No description",
+    )
+    embed.add_field(
+        name="Genres",
+        value=", ".join(series_infos.genres) or "No genres",
+        inline=False,
+    )
+
+    if series_infos.thumbnail:
+        embed.set_thumbnail(url=series_infos.thumbnail)
+
+    return embed
+
+
+def get_ref(inter: discord.Interaction) -> tuple[str, str, str, str]:
+    if inter.message is None or not inter.message.embeds or not (ref := inter.message.embeds[0].footer.text):
+        raise ValueError("Invalid message")
+    series_type, series_id, lang, *_ = ref.split("/")
+    return series_type, series_id, lang, ref
+
+
 async def check_subscription(type: str, series: str, language: str):
     sql = "SELECT user_id FROM subscription WHERE type = ? AND series = ? AND language = ?"
     async with client.db.cursor() as cursor:
         req = await cursor.execute(sql, (type, series, language))
         return await req.fetchall()
-
-
-#     if not (results := await check_subscription(chapter.manga.id)):
-#         return
-
-#     message = await client.manga_researcher.channel.create_thread(
-#         name=f"{chapter.manga.name[:80]} - chapter {chapter.number}",
-#         embed=embed,
-#         content=", ".join(f"<@{user_id}>" for user_id, in results),
-#         view=SubscribeView(chapter.manga.id),
-#     )
-
-#     for chunk in chunker(await source.get_pages(chapter), 10):
-#         imgs = await asyncio.gather(*(source.download_page(page) for page in chunk))
-#         files = [File(img[1], f"{chapter.number}-{img[0]}", spoiler=True) for img in imgs]
-#         await client.manga_researcher.webhook.send(files=files, thread=message.thread)
 
 
 @client.mediasub.sub_to(*MangaBot.sources)
@@ -167,8 +189,10 @@ async def on_content(src: ExtendedSource, content: Content):
         embed.set_thumbnail(url=series.thumbnail)
     embed.add_field(name="Language", value=content.lang, inline=True)
     embed.add_field(name="Source", value=src.name, inline=True)
+    embed.set_footer(text=content.id)
 
-    await client.spam_channel.send(embed=embed)
+    view = DownloadView()
+    await client.spam_channel.send(embed=embed, view=view)
 
     if not (results := await check_subscription(content.type, content.id_name, content.lang)):
         return
@@ -176,63 +200,21 @@ async def on_content(src: ExtendedSource, content: Content):
     await client.spread_channel.create_thread(
         name=thread_name,
         embed=embed,
+        view=view,
         content=", ".join(f"<@{user_id}>" for user_id, in results),
     )
-
-
-# @client.mediasub.sub_to(*client.webtoon_researcher.sources)
-# async def on_webtoon(source: WebtoonSource, episode: WebtoonEpisode):
-#     await client.wait_until_ready()
-
-#     embed = discord.Embed(
-#         title=f"New episode of {episode.webtoon.name} !",
-#         description=f"**{episode.webtoon.name[:80]}** - episode {episode.number}",
-#         url=episode.url,
-#     )
-#     embed.add_field(name="Language", value=episode.language or "unknown", inline=True)
-#     embed.add_field(name="Source", value=source.name, inline=True)
-
-#     await client.spam_channel.send(embed=embed, view=SubscribeView(episode.webtoon.id))
-
-#     if not (results := await check_subscription(episode.webtoon.id)):
-#         return
-
-#     await client.anime_researcher.channel.create_thread(
-#         name=f"{episode.webtoon.name[:50]} - {episode.name}",
-#         embed=embed,
-#         content=", ".join(f"<@{user_id}>" for user_id, in results),
-#         view=SubscribeView(episode.webtoon.id),
-#     )
-
-
-# dial = {
-#     # "manga": client.manga_researcher,
-#     "anime": client.anime_researcher,
-#     # "webtoon": client.webtoon_researcher,
-# }
 
 
 @client.tree.command()
 @app_commands.rename(name_id="name")
 async def search(inter: discord.Interaction, name_id: str):
-    result = MangaBot.searcher.cache.get(name_id)
-    if not result:
+    series_infos = MangaBot.searcher.cache.get(name_id)
+    if not series_infos:
         return await inter.response.send_message("No result found")
 
-    embed = discord.Embed(
-        title=result.name[:80],
-        description=result.description or "No description",
-    )
-    embed.add_field(
-        name="Genres",
-        value=", ".join(result.genres) or "No genres",
-        inline=False,
-    )
-
-    if result.thumbnail:
-        embed.set_thumbnail(url=result.thumbnail)
-
-    await inter.response.send_message(embed=embed, view=SubscriptionView(name_id, result))
+    embed = series_embed(series_infos)
+    view = SubscriptionView(name_id, series_infos)
+    await inter.response.send_message(embed=embed, view=view)
 
 
 @search.autocomplete(name="name_id")
@@ -273,37 +255,10 @@ async def refresh_all():
     await MangaBot.searcher.build_cache()
 
 
-# @client.event
-# async def on_interaction(inter: discord.Interaction):
-#     if inter.type != discord.InteractionType.component:
-#         return
-
-#     data: MessageComponentInteractionData = inter.data  # type: ignore
-#     if data["component_type"] != discord.ComponentType.button.value:
-#         return
-#     if not data["custom_id"].startswith("toggle_subscription"):
-#         return
-
-#     # keep only text behind toggle_subscription
-#     _, series_type, series_hash = data["custom_id"].split("::")
-#     async with client.db.cursor() as cursor:
-#         sql = """SELECT 1 FROM subscription WHERE user_id = ? AND series_hash = ?"""
-#         req = await cursor.execute(sql, (inter.user.id, series_hash))
-#         res = await req.fetchone()
-#         if res is not None:
-#             sql = """DELETE FROM subscription WHERE user_id = ? AND series_hash = ?"""
-#             await cursor.execute(sql, (inter.user.id, series_hash))
-#             await inter.response.send_message("You have been unsubscribed !", ephemeral=True)
-#         else:
-#             sql = """INSERT INTO subscription VALUES (?, ?, ?)"""
-#             await cursor.execute(sql, (inter.user.id, series_hash, series_type))
-#             await inter.response.send_message("You have been subscribed !", ephemeral=True)
-#     await client.db.commit()
-
-
 class SubscriptionView(ui.View):
     def __init__(self, series_id: str, series_infos: SeriesInfos):
         super().__init__(timeout=0)
+
         self.series_id = series_id
         self.series_infos = series_infos
 
@@ -316,6 +271,7 @@ class SubscriptionView(ui.View):
     @ui.button(label="Unsubscribe", style=discord.ButtonStyle.danger)
     async def unsubscribe(self, inter: discord.Interaction, button: ui.Button[Self]):
         sql = """DELETE FROM subscription WHERE user_id = ? AND series = ?"""
+
         await client.db.execute(sql, (inter.user.id, self.series_id))
         await client.db.commit()
         await inter.response.send_message("You have been unsubscribed (from all, because la flemme)!", ephemeral=True)
@@ -355,6 +311,84 @@ class SubscriptionLangView(ui.View):
             await cursor.execute(sql, (inter.user.id, self.type, self.series_id, select.values[0]))
             await client.db.commit()
         await inter.response.send_message("You have been subscribed !", ephemeral=True)
+
+
+class DownloadView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Download", custom_id="download.download", style=discord.ButtonStyle.blurple)
+    async def download(self, inter: discord.Interaction, button: ui.Button[Self]):
+        del button  # unused
+        content_type, series_name, language, ref = get_ref(inter)
+        series = client.searcher.cache[series_name]
+
+        providers_names = series.types[content_type][language]
+        providers = [next(s for s in MangaBot.sources if s.name == name) for name in providers_names]
+        providers = [p for p in providers if p.supports_download]
+
+        if not providers:
+            return await inter.response.send_message("No sources available for download.", ephemeral=True)
+
+        await inter.response.send_message(
+            view=SourceSelect(providers, ref),
+            ephemeral=True,
+        )
+
+    @ui.button(label="Series", custom_id="download.view_series", style=discord.ButtonStyle.gray)
+    async def series(self, inter: discord.Interaction, button: ui.Button[Self]):
+        del button  # unused
+        _, series_name, *_ = get_ref(inter)
+        series_infos = client.searcher.cache[series_name]
+        await inter.response.send_message(
+            view=SubscriptionView(series_name, series_infos),
+            embed=series_embed(series_infos),
+            ephemeral=True,
+        )
+
+
+class SourceSelect(ui.View):
+    def __init__(self, sources: list[ExtendedSource], ref: str):
+        super().__init__()
+
+        self.ref = ref
+        for src in sources:
+            self.select_type.add_option(label=src.name)
+
+    @ui.select(cls=ui.Select, placeholder="Source")
+    async def select_type(self, inter: discord.Interaction, select: ui.Select[Self]):
+        await inter.response.defer(thinking=True, ephemeral=True)
+
+        source_name = select.values[0]
+        source = next(s for s in MangaBot.sources if s.name == source_name)
+
+        try:
+            tmp: list[Download] = []
+            elements_type: type[Download] = DownloadBytes
+            async for download in source.download(self.ref):
+                match download:
+                    case DownloadBytes():
+                        tmp.append(download)
+                        elements_type = DownloadBytes
+                    case DownloadUrl():
+                        tmp.append(download)
+                        elements_type = DownloadUrl
+                    case DownloadInProgress():
+                        pass  # TODO: send progression
+        except Exception as e:
+            await inter.followup.send(f"Error: {e}. Please try with another source.", ephemeral=True)
+            return
+
+        sizes = {DownloadBytes: 10, DownloadUrl: 5}
+        for chunk in itertools.batched(tmp, sizes[elements_type]):
+            if elements_type is DownloadBytes:
+                chunk = cast(list[DownloadBytes], chunk)
+                await inter.followup.send(
+                    files=[discord.File(d.data, filename=d.filename, spoiler=True) for d in chunk]
+                )
+            elif elements_type is DownloadUrl:
+                chunk = cast(list[DownloadUrl], chunk)
+                await inter.followup.send("\n".join(d.url for d in chunk))
 
 
 if __name__ == "__main__":
