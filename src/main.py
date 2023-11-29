@@ -379,6 +379,8 @@ class SourceSelect(ui.View):
             await inter.followup.send(f"Error: {e}. Please try with another source.", ephemeral=True)
             return
 
+        await inter.followup.send(f"Found {len(tmp)} elements. Sending...")
+
         sizes = {DownloadBytes: 10, DownloadUrl: 5}
         for chunk in itertools.batched(tmp, sizes[elements_type]):
             if elements_type is DownloadBytes:
