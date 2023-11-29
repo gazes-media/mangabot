@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup, Tag
 from httpx._types import QueryParamTypes, URLTypes
 from mediasub import SourceDown
 from mediasub._logger import BraceMessage as __
-from mediasub.source import LastPollContext
+from mediasub.source import LastPullContext
 from mediasub.utils import normalize
 
 from sources import Content, DownloadBytes, ExtendedSource, Series
@@ -32,6 +32,7 @@ class InternalData(TypedDict):
 class ScanVFDotNet(ExtendedSource):
     name = "ScanVF"  # type: ignore  # TODO
     url = _base_url = "https://www.scan-vf.net/"  # type: ignore  # TODO
+    supports_download = True
 
     _script_selector = "body > div.container-fluid > script"
 
@@ -69,7 +70,7 @@ class ScanVFDotNet(ExtendedSource):
             raise SourceDown(e) from e
 
     @typing.override
-    async def pull(self, last_poll_ctx: LastPollContext | None = None) -> Iterable[Content]:
+    async def pull(self, last_pull_ctx: LastPullContext | None = None) -> Iterable[Content]:
         res = await self._get(self._rss_url)
         feed: Any = feedparser.parse(res.text)
 
@@ -124,7 +125,6 @@ class ScanVFDotNet(ExtendedSource):
                 "url": tag.attrs["href"],
                 "manga_name": match["manga_name"],
             }
-            print(series.ref)
             return series
 
         return (parse_tag(tag) for tag in mangas_tag)
@@ -137,16 +137,14 @@ class ScanVFDotNet(ExtendedSource):
         if internal is None:
             raise ValueError(f"Unknown manga {'/'.join(manga_ref)}")  # TODO: better error
 
-        print(internal, chapter)
         chapter_url = self._chapter_url_fmt.format(manga_name=internal["manga_name"], chapter_nb=chapter)
-        print(chapter_url)
         raw_pages = await self._get_pages_raw(chapter_url)
-        print(raw_pages)
         for page in raw_pages:
+            filename = self._get_filename(page)
             page_url = self._get_page_url(internal, chapter, page)
-            print(page_url)
             yield DownloadBytes(
                 data=await self._download_page(page_url),
+                filename=filename,
             )
 
     async def _get_pages_raw(self, chapter_url: str) -> Iterable[PageRaw]:
@@ -170,3 +168,6 @@ class ScanVFDotNet(ExtendedSource):
         return self._images_url_fmt.format(
             manga_name=internal["manga_name"], chapter_nb=chapter, page_image=page["page_image"]
         )
+
+    def _get_filename(self, page: PageRaw) -> str:
+        return page["page_image"]

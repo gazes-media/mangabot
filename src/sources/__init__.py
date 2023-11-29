@@ -12,6 +12,7 @@ type Download = DownloadBytes | DownloadInProgress | DownloadUrl
 class Series:
     id_name: str
     name: str
+    # season: str | None = None
     aliases: list[str] = field(default_factory=list)
     popularity: int | None = None
     description: str | None = None
@@ -58,6 +59,7 @@ class ExtendedSource(PullSource):
 @dataclass
 class DownloadBytes:
     data: io.BytesIO
+    filename: str
 
 
 @dataclass

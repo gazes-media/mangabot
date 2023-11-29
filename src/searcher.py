@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 type CacheT = dict[str, SeriesInfos]
 
+type LangCacheT = dict[str, set[str]]  # {"lang": {"source1", "source2", ...}}
+type TypeCacheT = dict[str, LangCacheT]  # {"type": LangCacheT}
+
 
 @dataclass(kw_only=True)
 class SeriesInfos:
@@ -17,7 +20,7 @@ class SeriesInfos:
     description: str | None = None
     thumbnail: str | None = None
     popularity: list[int] = field(default_factory=list)
-    types: dict[str, set[str]] = field(default_factory=dict)
+    types: TypeCacheT = field(default_factory=dict)
     genres: set[str] = field(default_factory=set)
     aliases: set[str] = field(default_factory=set)
 
@@ -55,7 +58,8 @@ class Searcher:
                     series_infos.popularity.append(element.popularity)
 
                 series_infos.genres.update(element.genres)
-                series_infos.types.setdefault(element.type, set()).add(element.lang)
+                type_cache = series_infos.types.setdefault(element.type, dict())
+                type_cache.setdefault(element.lang, set()).add(src.name)
                 series_infos.aliases.update(element.aliases)
 
     async def search(self, query: str) -> list[tuple[str, SeriesInfos]]:

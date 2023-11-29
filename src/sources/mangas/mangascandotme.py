@@ -1,5 +1,5 @@
 import re
-from typing import Any
+from typing import Any, override
 
 from .scanvfdotnet import InternalData, PageRaw, ScanVFDotNet
 
@@ -29,3 +29,7 @@ class MangaScanDotMe(ScanVFDotNet):
     def _get_page_url(self, internal: InternalData, chapter: str, page: PageRaw) -> str:
         del internal, chapter  # unused
         return page["page_image"]
+
+    @override
+    def _get_filename(self, page: PageRaw) -> str:
+        return page["page_image"].split("/")[-1]
