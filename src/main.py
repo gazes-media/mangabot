@@ -4,7 +4,7 @@ import asyncio
 import itertools
 import logging
 import os
-from typing import Self, cast
+from typing import Self, Type, cast
 
 import aiosqlite
 import discord
@@ -13,7 +13,7 @@ from discord import ForumChannel, TextChannel, app_commands, ui
 from discord.ext import tasks
 from discord.utils import MISSING
 
-from constants import SPAM_CHANNEL, SPREAD_CHANNEL
+from constants import NEWS_CHANNEL, SPAM_CHANNEL, SPREAD_CHANNEL
 from database_patchs import patchs
 from searcher import Searcher, SeriesInfos
 from sources import (
@@ -28,6 +28,7 @@ from sources import (
     ScanMangaVFDotMe,
     ScanVFDotNet,
 )
+from sources.news import Melty, News
 from utils import BraceMessage as __
 
 logger = logging.getLogger(__name__)
@@ -55,15 +56,15 @@ class MangaBot(discord.AutoShardedClient):
         await self.init_db()
         await self.searcher.build_cache()
 
-        tmp = self.get_channel(SPAM_CHANNEL) or await self.fetch_channel(SPAM_CHANNEL)
-        if not isinstance(tmp, TextChannel):
-            raise TypeError("SPAM_CHANNEL is not a TextChannel")
-        self.spam_channel = tmp
+        async def getch_channel[T](id: int, assert_type: Type[T]) -> T:
+            tmp = self.get_channel(id) or await self.fetch_channel(id)
+            if not isinstance(tmp, assert_type):
+                raise TypeError(f"Channel {id} is not a {assert_type.__name__}")
+            return tmp
 
-        tmp = self.get_channel(SPREAD_CHANNEL) or await self.fetch_channel(SPREAD_CHANNEL)
-        if not isinstance(tmp, ForumChannel):
-            raise TypeError("SPREAD_CHANNEL is not a ForumChannel")
-        self.spread_channel = tmp
+        self.spam_channel = await getch_channel(SPAM_CHANNEL, TextChannel)
+        self.news_channel = await getch_channel(NEWS_CHANNEL, TextChannel)
+        self.spread_channel = await getch_channel(SPREAD_CHANNEL, ForumChannel)
 
         self.add_view(DownloadView())
 
@@ -158,6 +159,20 @@ async def check_subscription(type: str, series: str, language: str):
     async with client.db.cursor() as cursor:
         req = await cursor.execute(sql, (type, series, language))
         return await req.fetchall()
+
+
+@client.mediasub.sub_to(Melty())
+async def on_news(src: mediasub.Source, news: News):
+    embed = discord.Embed(
+        title=news.title,
+        description=news.description,
+        url=news.link,
+    )
+    embed.set_author(name=f"{src.name} - {news.author}")
+    if news.image_url:
+        embed.set_image(url=news.image_url)
+
+    await client.news_channel.send(embed=embed)
 
 
 @client.mediasub.sub_to(*MangaBot.sources)

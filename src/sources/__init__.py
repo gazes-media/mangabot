@@ -74,3 +74,4 @@ class DownloadUrl:
 
 from .animes import Gazes as Gazes
 from .mangas import MangaScanDotMe as MangaScanDotMe, ScanMangaVFDotMe as ScanMangaVFDotMe, ScanVFDotNet as ScanVFDotNet
+from .news import Melty as Melty
