@@ -61,7 +61,7 @@ class ScanVFDotNet(ExtendedSource):
         self._chapter_url_reg = re.compile(base_url + r"/(?P<manga_name>[\w\-.]+)/chapitre-(?P<number>\d+\.?\d*)")
         self._manga_url_reg = re.compile(base_url + r"/(?P<manga_name>[\w\-.]+)")
 
-        self._title_scrap_reg = re.compile(r"(?P<manga_name>[^#]+) #\d+")
+        self._title_scrap_reg = re.compile(r"(?P<manga_name>.+) #\d+")
 
     async def _get(self, url: URLTypes, *, params: QueryParamTypes | None = None) -> httpx.Response:
         try:

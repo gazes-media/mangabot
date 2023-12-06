@@ -161,7 +161,7 @@ async def check_subscription(type: str, series: str, language: str):
         return await req.fetchall()
 
 
-@client.mediasub.sub_to(Melty())
+@client.mediasub.sub_to(Melty(shared_client=True))
 async def on_news(src: mediasub.Source, news: News):
     embed = discord.Embed(
         title=news.title,
