@@ -1,8 +1,9 @@
+import asyncio
 import itertools
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, AsyncGenerator, Iterable
 from urllib.parse import urljoin
 
 import feedparser
@@ -12,21 +13,21 @@ from mediasub import SourceDown
 from mediasub.source import LastPullContext
 from mediasub.utils import normalize
 
-from sources import Content, ExtendedSource, Series
+from sources import Content, Download, DownloadInProgress, DownloadUrl, ExtendedSource, Series
 from utils import BraceMessage as __
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class AnimeInternal:
+class InternalData:
     id: int
-    lang: str | None = None
 
 
 class Gazes(ExtendedSource):
     name = "Gazes"  # type: ignore  # TODO
     url = "https://gazes.fr/"  # type: ignore  # TODO
+    supports_download = True
     _base_url = "https://api.gazes.fr/anime/"
 
     _rss_url = urljoin(_base_url, "animes/rss")
@@ -36,7 +37,17 @@ class Gazes(ExtendedSource):
 
     _link_regex = re.compile(r"https://gazes.fr/anime/(?P<anime_id>\d+)/episode/(?P<episode>\d+)")
 
+    _download_url_base = "https://animedl.airopi.dev"
+    _download_invoke_url = _download_url_base + "/download/{anime_id}/{episode}/{lang}"
+
     search_fields = {"title_english": 2, "title_romanji": 2, "title_french": 2, "others": 1}
+
+    def __init__(self):
+        super().__init__()
+        # cache[series_id][normalized(season)] -> InternalData
+        self._cache: dict[str, dict[str, InternalData]] = {}
+        # _conversions[ref] -> url
+        self._conversions: dict[str, str]
 
     async def pull(self, last_pull_ctx: LastPullContext | None = None) -> Iterable[Content]:
         try:
@@ -58,7 +69,7 @@ class Gazes(ExtendedSource):
                 type="anime",
                 id_name=normalize(anime_raw["title"]),
                 identifiers=(
-                    normalize(item.title),
+                    normalize(item.title),  # title is the season name
                     str(link_match["episode"]),
                 ),
                 lang="vostfr",  # TODO: Add lang support
@@ -95,10 +106,15 @@ class Gazes(ExtendedSource):
 
     async def get_all(self) -> Iterable[Series]:
         self._fetch_seasons.cache_clear()
+        self._cache = {}
         raw_vf = await self._fetch_seasons("vf")
         raw_vostfr = await self._fetch_seasons("vostfr")
 
         def parse_raw(raw: dict[str, Any], lang: str) -> Series:
+            seasons = self._cache.setdefault(normalize(raw["title"]), {})
+            for season in raw["seasons"]:
+                seasons[normalize(season["fiche"]["title"])] = InternalData(id=int(season["fiche"]["id"]))
+
             return Series(
                 id_name=normalize(raw["title"]),
                 name=raw["title"],
@@ -113,3 +129,27 @@ class Gazes(ExtendedSource):
             (parse_raw(raw, "vf") for raw in raw_vf),
             (parse_raw(raw, "vostfr") for raw in raw_vostfr),
         )
+
+    async def download(self, ref: str) -> AsyncGenerator[Download, None]:
+        print(ref)
+        _, series_id, lang, season, episode = ref.split("/")
+        internal_data = self._cache[series_id][season]
+
+        url = self._download_invoke_url.format(anime_id=internal_data.id, episode=episode, lang=lang)
+        response = await self.client.get(url)
+
+        if response.status_code != 200:
+            raise SourceDown()
+        data = response.json()
+        while data["status"] in ("started", "in_progress"):
+            yield DownloadInProgress(data.get("progress") or 0, data.get("estimated_remaining_time"))
+            await asyncio.sleep(2)
+            response = await self.client.get(url)
+            if response.status_code != 200:
+                raise SourceDown()
+            data = response.json()
+
+        if data["status"] == "error":
+            raise SourceDown()
+
+        yield DownloadUrl(urljoin(self._download_url_base, data["result"]))

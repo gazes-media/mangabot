@@ -64,7 +64,8 @@ class DownloadBytes:
 
 @dataclass
 class DownloadInProgress:
-    progression: int
+    progression: float
+    remaining_time: float | None = None
 
 
 @dataclass

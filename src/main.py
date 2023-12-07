@@ -389,23 +389,23 @@ class SourceSelect(ui.View):
                         tmp.append(download)
                         elements_type = DownloadUrl
                     case DownloadInProgress():
-                        pass  # TODO: send progression
+                        await inter.edit_original_response(
+                            content=f"Download in progress... {download.progression}% (ETA: {download.remaining_time}s)"
+                        )
         except Exception as e:
             await inter.followup.send(f"Error: {e}. Please try with another source.", ephemeral=True)
             return
-
-        await inter.followup.send(f"Found {len(tmp)} elements. Sending...")
 
         sizes = {DownloadBytes: 10, DownloadUrl: 5}
         for chunk in itertools.batched(tmp, sizes[elements_type]):
             if elements_type is DownloadBytes:
                 chunk = cast(list[DownloadBytes], chunk)
                 await inter.followup.send(
-                    files=[discord.File(d.data, filename=d.filename, spoiler=True) for d in chunk], ephemeral=False
+                    files=[discord.File(d.data, filename=d.filename, spoiler=True) for d in chunk], ephemeral=True
                 )
             elif elements_type is DownloadUrl:
                 chunk = cast(list[DownloadUrl], chunk)
-                await inter.followup.send("\n".join(d.url for d in chunk), ephemeral=False)
+                await inter.followup.send("\n".join(d.url for d in chunk), ephemeral=True)
 
 
 if __name__ == "__main__":
