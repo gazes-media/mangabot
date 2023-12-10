@@ -37,7 +37,7 @@ class Gazes(ExtendedSource):
 
     _link_regex = re.compile(r"https://gazes.fr/anime/(?P<anime_id>\d+)/episode/(?P<episode>\d+)")
 
-    _download_url_base = "https://animedl.airopi.dev"
+    _download_url_base = "https://mp4.gazes.fr"
     _download_invoke_url = _download_url_base + "/download/{anime_id}/{episode}/{lang}"
 
     search_fields = {"title_english": 2, "title_romanji": 2, "title_french": 2, "others": 1}
